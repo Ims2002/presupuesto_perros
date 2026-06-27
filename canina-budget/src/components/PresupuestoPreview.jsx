@@ -1,93 +1,185 @@
-export default function PresupuestoPreview({ presupuesto, onBack }) {
+import { getConfig } from '../data/config'
+
+function fmt(dateStr) {
+  if (!dateStr) return ''
+  const [y, m, d] = dateStr.split('-')
+  return `${d}/${m}/${y}`
+}
+
+const FONT = "'Inter', 'Segoe UI', system-ui, sans-serif"
+
+const C = {
+  cream: '#fdf9f5',       // fondo blanco crudo del documento
+  tan: '#d8c9b5',         // bordes/separadores beige tostado
+  title: '#3c2008',       // marron espresso oscuro - "PRESUPUESTO"
+  body: '#2a1a08',        // texto principal, marron muy oscuro
+  muted: '#9a8570',       // texto secundario, gris-marron calido
+  totalBg: '#1c0e04',     // barra TOTAL, espresso profundo
+  accent: '#a07848',      // "Datos del cliente:" - tono miel calido
+  footerBg: '#f5ede0',    // fondo suave de la seccion de pago
+}
+
+async function downloadPDF(numero) {
+  const { default: html2canvas } = await import('html2canvas')
+  const { default: jsPDF } = await import('jspdf')
+
+  const el = document.getElementById('print-area')
+  const canvas = await html2canvas(el, { scale: 2, useCORS: true, backgroundColor: '#ffffff' })
+  const imgData = canvas.toDataURL('image/png')
+
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+  const pageW = pdf.internal.pageSize.getWidth()
+  const pageH = pdf.internal.pageSize.getHeight()
+  const imgH = (canvas.height * pageW) / canvas.width
+
+  let posY = 0
+  if (imgH <= pageH) {
+    pdf.addImage(imgData, 'PNG', 0, 0, pageW, imgH)
+  } else {
+    // multi-pagina
+    let remaining = imgH
+    while (remaining > 0) {
+      pdf.addImage(imgData, 'PNG', 0, -posY, pageW, imgH)
+      remaining -= pageH
+      posY += pageH
+      if (remaining > 0) pdf.addPage()
+    }
+  }
+  pdf.save(`presupuesto-${numero}.pdf`)
+}
+
+export default function PresupuestoPreview({ presupuesto, onBack, logoSrc }) {
   const { cliente, mascota, fechaInicio, fechaFin, lineas, notas, numero } = presupuesto
-  const total = lineas.reduce((s, l) => s + l.subtotal, 0)
-  const hoy = new Date().toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' })
+  const total = lineas.reduce((s, l) => s + (l.subtotal ?? 0), 0)
+  const cfg = getConfig()
 
   return (
     <div>
       {/* Barra de acciones */}
-      <div className="no-print flex justify-between items-center mb-6">
-        <button
-          onClick={onBack}
-          className="flex items-center gap-2 text-gray-600 hover:text-gray-800 text-sm"
-        >
-          ← Volver al formulario
+      <div className="no-print" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+        <button onClick={onBack} style={{ fontSize: 13, color: C.muted, background: 'none', border: 'none', cursor: 'pointer' }}>
+          Volver al formulario
         </button>
         <button
-          onClick={() => window.print()}
-          className="flex items-center gap-2 px-5 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm font-medium"
+          onClick={() => downloadPDF(numero)}
+          style={{ fontSize: 13, padding: '9px 22px', background: C.totalBg, color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, letterSpacing: '0.04em', fontFamily: FONT }}
         >
-          🖨️ Imprimir / Guardar PDF
+          Descargar PDF
         </button>
       </div>
 
-      {/* Documento imprimible */}
-      <div className="bg-white rounded-2xl shadow-sm p-8 max-w-2xl mx-auto" id="print-area">
-        {/* Cabecera */}
-        <div className="flex justify-between items-start mb-8">
+      {/* DOCUMENTO */}
+      <div id="print-area" style={{ background: 'white', maxWidth: 680, margin: '0 auto', fontFamily: FONT, color: C.body, boxShadow: '0 2px 20px rgba(0,0,0,0.08)', borderRadius: 4 }}>
+
+        {/* CABECERA */}
+        <div style={{ padding: '36px 44px 24px', borderBottom: `2px solid ${C.tan}`, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <h1 className="text-2xl font-bold text-gray-800">Guardería Canina</h1>
-            <p className="text-gray-500 text-sm mt-1">Presupuesto #{numero}</p>
+            <div style={{ fontSize: 42, fontWeight: 800, color: C.title, lineHeight: 1, letterSpacing: '-1.5px', textTransform: 'uppercase', fontFamily: FONT }}>
+              Presupuesto
+            </div>
+            <div style={{ fontSize: 15, color: C.accent, marginTop: 8, fontWeight: 400 }}>
+              Datos del cliente:{'  '}
+              <span style={{ color: C.body, fontWeight: 600 }}>{cliente.nombre}</span>
+              {mascota && <span style={{ fontWeight: 400, color: C.muted }}> &mdash; {mascota}</span>}
+            </div>
           </div>
-          <div className="text-right text-sm text-gray-500">
-            <p>Fecha: {hoy}</p>
-            {fechaInicio && <p>Estancia desde: {fechaInicio}</p>}
-            {fechaFin && <p>Estancia hasta: {fechaFin}</p>}
+          <div style={{ textAlign: 'right', paddingTop: 4 }}>
+            {logoSrc
+              ? <img src={logoSrc} alt="Pet Hotel" style={{ width: 80, marginBottom: 6 }} />
+              : (
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: '0.15em', textTransform: 'uppercase', lineHeight: 1.5, fontFamily: FONT }}>
+                  Pet Hotel<br />Guarderia Canina
+                </div>
+              )
+            }
+            {fechaInicio && <div style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>Entrada: {fmt(fechaInicio)}</div>}
+            {fechaFin && <div style={{ fontSize: 11, color: C.muted }}>Salida: {fmt(fechaFin)}</div>}
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>N.&deg; {numero}</div>
           </div>
         </div>
 
-        {/* Datos cliente */}
-        <div className="border border-gray-100 rounded-xl p-4 mb-6 bg-gray-50">
-          <h2 className="text-xs uppercase tracking-wide text-gray-400 mb-2">Cliente</h2>
-          <p className="font-semibold text-gray-800">{cliente.nombre || '—'}</p>
-          {cliente.telefono && <p className="text-sm text-gray-600">📞 {cliente.telefono}</p>}
-          {cliente.email && <p className="text-sm text-gray-600">✉️ {cliente.email}</p>}
-          {mascota && <p className="text-sm text-gray-600 mt-1">🐾 Mascota: <strong>{mascota}</strong></p>}
+        {/* TABLA */}
+        <div style={{ padding: '4px 44px 0' }}>
+          {/* Cabecera tabla */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0 8px', borderBottom: `1px solid ${C.tan}` }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.body, letterSpacing: '0.01em' }}>Descripcion</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.body, letterSpacing: '0.01em' }}>Total</div>
+          </div>
+
+          {/* Filas */}
+          {lineas.map((l, i) => (
+            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '14px 0', borderBottom: `1px solid ${C.tan}` }}>
+              <div style={{ flex: 1, paddingRight: 28 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: C.title, letterSpacing: '0.02em', textTransform: 'uppercase' }}>
+                  {l.descripcion}
+                </div>
+                {l.subfecha && (
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>{l.subfecha}</div>
+                )}
+                {l.precioUnit !== null && (
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
+                    {l.precioUnit}EUR/dia &bull; {l.cantidad} {l.cantidad === 1 ? 'dia' : 'dias'}
+                  </div>
+                )}
+              </div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: C.title, minWidth: 64, textAlign: 'right', paddingTop: 1 }}>
+                {l.subtotal !== null ? `${l.subtotal.toFixed(0)}EUR` : 'Consultar'}
+              </div>
+            </div>
+          ))}
         </div>
 
-        {/* Líneas */}
-        <table className="w-full text-sm mb-6">
-          <thead>
-            <tr className="border-b-2 border-gray-200">
-              <th className="text-left py-2 text-gray-600">Descripción</th>
-              <th className="text-center py-2 text-gray-600">Cant.</th>
-              <th className="text-right py-2 text-gray-600">P. unit.</th>
-              <th className="text-right py-2 text-gray-600">Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {lineas.map((l, i) => (
-              <tr key={i} className="border-b border-gray-100">
-                <td className="py-2 text-gray-700">{l.descripcion}</td>
-                <td className="py-2 text-center text-gray-600">{l.cantidad}</td>
-                <td className="py-2 text-right text-gray-600">
-                  {l.precioUnit === null ? 'Consultar' : `${l.precioUnit.toFixed(2)} €`}
-                </td>
-                <td className="py-2 text-right font-medium text-gray-800">
-                  {l.subtotal === null ? '—' : `${l.subtotal.toFixed(2)} €`}
-                </td>
-              </tr>
+        {/* TOTAL */}
+        <div style={{ margin: '28px 44px 0', background: C.totalBg, display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 28px' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'white', letterSpacing: '0.3em', textTransform: 'uppercase', fontFamily: FONT }}>
+            T O T A L :
+          </div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: 'white', letterSpacing: '0.08em', fontFamily: FONT }}>
+            {total.toFixed(0)} EUR
+          </div>
+        </div>
+
+        {/* PAGO + CONTACTO */}
+        <div style={{ display: 'flex', margin: '28px 44px 0', background: C.footerBg, padding: '20px 24px', borderRadius: 2 }}>
+          <div style={{ flex: 1, paddingRight: 28, borderRight: `1px solid ${C.tan}` }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: C.title, marginBottom: 12, fontFamily: FONT }}>
+              Informacion para el pago
+            </div>
+            <div style={{ fontSize: 12, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.04em', lineHeight: 1.9, fontFamily: FONT }}>
+              <span style={{ color: C.body, fontWeight: 600 }}>{cfg.bizum}</span><br />
+              Mediante Bizum al numero o pago en metálico
+            </div>
+            
+          </div>
+          <div style={{ flex: 1, paddingLeft: 28 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: C.title, marginBottom: 12, fontFamily: FONT }}>
+              Datos de contacto
+            </div>
+            {cfg.contactos.map((c, i) => (
+              <div key={i} style={{ fontSize: 13, color: C.muted, marginBottom: 6, fontFamily: FONT }}>
+                {c.telefono} <span style={{ fontSize: 11 }}>({c.nombre})</span>
+              </div>
             ))}
-          </tbody>
-          <tfoot>
-            <tr>
-              <td colSpan={3} className="pt-4 text-right font-bold text-gray-800 text-base">TOTAL</td>
-              <td className="pt-4 text-right font-bold text-amber-600 text-base">{total.toFixed(2)} €</td>
-            </tr>
-          </tfoot>
-        </table>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 4, fontFamily: FONT }}>{cfg.email}</div>
+          </div>
+        </div>
 
         {/* Notas */}
         {notas && (
-          <div className="border-t border-gray-100 pt-4">
-            <p className="text-xs text-gray-400 uppercase tracking-wide mb-1">Notas</p>
-            <p className="text-sm text-gray-600 whitespace-pre-line">{notas}</p>
+          <div style={{ margin: '20px 44px 0', padding: '12px 16px', background: C.footerBg, borderLeft: `3px solid ${C.tan}`, fontSize: 12, color: C.muted, whiteSpace: 'pre-line', fontFamily: FONT }}>
+            <strong style={{ display: 'block', marginBottom: 4, color: C.body, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Notas</strong>
+            {notas}
           </div>
         )}
 
-        <p className="text-xs text-gray-300 text-center mt-10">
-          Presupuesto válido durante 30 días desde la fecha de emisión.
-        </p>
+        {/* POLITICAS */}
+        <div style={{ margin: '24px 44px 36px', borderTop: `1px solid ${C.tan}`, paddingTop: 16 }}>
+          <ul style={{ margin: 0, padding: 0, paddingLeft: 16, fontSize: 11, color: C.muted, lineHeight: 1.8, fontFamily: FONT }}>
+            {cfg.politicas.map((p, i) => (
+              <li key={i} style={{ marginBottom: 4 }}>{p}</li>
+            ))}
+          </ul>
+        </div>
       </div>
     </div>
   )
