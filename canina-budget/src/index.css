@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, sans-serif; background: #f8f7f5; }
+#root { min-height: 100svh; }
+
+@media print {
+  .no-print { display: none !important; }
+  .print-only { display: block !important; }
+  body { background: white; }
+}
+.print-only { display: none; }

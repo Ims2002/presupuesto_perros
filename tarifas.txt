@@ -1,0 +1,14 @@
+Estancia / Mascota	Día Entre semana	Día + Noche Entre semana	Día Fin de semana	Dia + Noche Fin de semana	Servicio Tarde + Noche
+1 Mascota	20€	25€	25€	30€	20€
+2 Mascotas	35€	40€	40€	45€	35€
+3 Mascotas	45€	50€	50€	55€	40€
+
+
+	Entre semana	Fin de Semana o Festivo
+Paseo 15 minutos	12€	15€
+Cuidado a Domicilio Gato	15€ (1 visita) / 20€ (2 visitas)	17€ (1 visita) / 22€ (2 visitas)
+Cuidado a Domicilio 2 Gatos	20€ (1 visita) / 25€ (2 visitas)	22€ (1 visita) / 27€ (2 visitas)
+Cuidado Larga Estancia (más de 30 días , no aplicable en temporada alta)	18€	20€
+Cuidado a Domicilio Perro	Consultar	Consultar
+
+
