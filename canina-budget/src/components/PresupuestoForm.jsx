@@ -151,7 +151,6 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero }) {
 
   function handleSubmit(e) {
     e.preventDefault()
-    if (!cliente.nombre) return alert('Introduce el nombre del cliente.')
     if (lineas.length === 0) return alert('Añade al menos un servicio.')
     const numero = String(ultimoNumero + 1).padStart(4, '0')
     onGenerar({ cliente, mascota, fechaInicio, fechaFin, notas, lineas, numero })
@@ -165,19 +164,9 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero }) {
       {/* Cliente */}
       <section className="bg-white rounded-2xl p-5 shadow-sm">
         <div style={sec}>Datos del cliente</div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <div>
-            <label className={lbl}>Nombre *</label>
-            <input className={inp} value={cliente.nombre} onChange={e => setCliente(p => ({ ...p, nombre: e.target.value }))} placeholder="Nombre del cliente" />
-          </div>
-          <div>
-            <label className={lbl}>Telefono</label>
-            <input className={inp} value={cliente.telefono} onChange={e => setCliente(p => ({ ...p, telefono: e.target.value }))} placeholder="6XX XXX XXX" />
-          </div>
-          <div>
-            <label className={lbl}>Email</label>
-            <input className={inp} type="email" value={cliente.email} onChange={e => setCliente(p => ({ ...p, email: e.target.value }))} placeholder="correo@ejemplo.com" />
-          </div>
+        <div>
+          <label className={lbl}>Nombre</label>
+          <input className={inp} value={cliente.nombre} onChange={e => setCliente(p => ({ ...p, nombre: e.target.value }))} placeholder="Nombre del cliente" />
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 mt-4">
           <div>
