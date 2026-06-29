@@ -6,9 +6,9 @@ export const configDefault = {
   ],
   email: 'guarderiacaninabenitachell@gmail.com',
   politicas: [
-    /*'Politica de Reserva: Para confirmar una reserva, es necesario abonar el 50% del importe total antes del inicio del servicio.',
+    'Politica de Reserva: Para confirmar una reserva, es necesario abonar el 50% del importe total antes del inicio del servicio.',
     'Politica de Cancelacion: En caso de cancelacion con menos de 48 horas de antelacion, se reembolsara unicamente el 50% del importe total de la reserva. En casos de enfermedad debidamente justificada o catastrofes naturales, se evaluara la posibilidad de reembolso completo.',
-    'El incumplimiento de los horarios establecidos podra generar un cargo adicional al precio final del servicio.',*/
+    'El incumplimiento de los horarios establecidos podra generar un cargo adicional al precio final del servicio.',
   ],
 }
 
