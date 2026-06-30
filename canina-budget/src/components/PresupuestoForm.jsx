@@ -8,7 +8,6 @@ const TIPOS_ESTANCIA = [
   { key: 'tardeNoche', label: 'Servicio Tarde + Noche' },
 ]
 
-// Claves de fin de semana en tarifas
 const FIN_SEMANA_KEY = {
   'diaEntresemana': 'diaFinSemana',
   'diaNocheEntresemana': 'diaNocheFinSemana',
@@ -35,8 +34,8 @@ const inp = 'w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:ou
 const lbl = 'block text-xs text-gray-500 mb-1'
 const sec = { fontWeight: 600, color: '#374151', marginBottom: 16, fontSize: 14 }
 
-export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero }) {
-  const [cliente, setCliente] = useState({ nombre: '', telefono: '', email: '' })
+export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, initialData, isEditing }) {
+  const [cliente, setCliente] = useState({ nombre: '' })
   const [mascota, setMascota] = useState('')
   const [fechaInicio, setFechaInicio] = useState('')
   const [fechaFin, setFechaFin] = useState('')
@@ -57,6 +56,26 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero }) {
   const [manPrecio, setManPrecio] = useState('')
   const [manCant, setManCant] = useState(1)
 
+  // Cargar datos cuando se edita un presupuesto existente
+  useEffect(() => {
+    if (initialData) {
+      setCliente(initialData.cliente || { nombre: '' })
+      setMascota(initialData.mascota || '')
+      setFechaInicio(initialData.fechaInicio || '')
+      setFechaFin(initialData.fechaFin || '')
+      setNotas(initialData.notas || '')
+      setLineas(initialData.lineas || [])
+    } else {
+      // Reset para nuevo presupuesto
+      setCliente({ nombre: '' })
+      setMascota('')
+      setFechaInicio('')
+      setFechaFin('')
+      setNotas('')
+      setLineas([])
+    }
+  }, [initialData])
+
   const split = splitDias(fechaInicio, fechaFin)
   const hasFechas = fechaInicio && fechaFin && split.total > 0
 
@@ -66,37 +85,18 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero }) {
     const tipo = TIPOS_ESTANCIA.find(t => t.key === tipoEstancia)
 
     if (hasFechas) {
-      // Obtener clave de fin de semana equivalente
       const fsKey = tipoEstancia.includes('Fin') || tipoEstancia.includes('finSemana')
         ? tipoEstancia
         : FIN_SEMANA_KEY[tipoEstancia]
-
       if (split.entresemana > 0) {
-        const precio = row[tipoEstancia]
-        addLinea(
-          `${row.label} - ${tipo.label}`,
-          subfechaEstancia,
-          split.entresemana,
-          precio
-        )
+        addLinea(`${row.label} - ${tipo.label}`, subfechaEstancia, split.entresemana, row[tipoEstancia])
       }
       if (split.finSemana > 0) {
         const fsLabel = TIPOS_ESTANCIA.find(t => t.key === fsKey)?.label || tipo.label
-        const precio = row[fsKey]
-        addLinea(
-          `${row.label} - ${fsLabel} (fin de semana)`,
-          subfechaEstancia,
-          split.finSemana,
-          precio
-        )
+        addLinea(`${row.label} - ${fsLabel} (fin de semana)`, subfechaEstancia, split.finSemana, row[fsKey])
       }
     } else {
-      addLinea(
-        `${row.label} - ${tipo.label}`,
-        subfechaEstancia,
-        1,
-        row[tipoEstancia]
-      )
+      addLinea(`${row.label} - ${tipo.label}`, subfechaEstancia, 1, row[tipoEstancia])
     }
     setSubfechaEstancia('')
   }
@@ -106,8 +106,7 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero }) {
     const srv = tarifas.servicios.find(s => s.id === servicioSel)
     const precio = srv.tipo === 'consultar' ? null : srv[diasSemana]
     const esFs = diasSemana === 'finSemana'
-    const desc = `${srv.label} (${esFs ? 'fin de semana/festivo' : 'entre semana'})`
-    addLinea(desc, subfechaServicio, cantServicio, precio)
+    addLinea(`${srv.label} (${esFs ? 'fin de semana/festivo' : 'entre semana'})`, subfechaServicio, cantServicio, precio)
     setCantServicio(1)
     setSubfechaServicio('')
   }
@@ -152,7 +151,9 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero }) {
   function handleSubmit(e) {
     e.preventDefault()
     if (lineas.length === 0) return alert('Añade al menos un servicio.')
-    const numero = String(ultimoNumero + 1).padStart(4, '0')
+    const numero = isEditing
+      ? initialData.numero
+      : String(ultimoNumero + 1).padStart(4, '0')
     onGenerar({ cliente, mascota, fechaInicio, fechaFin, notas, lineas, numero })
   }
 
@@ -160,6 +161,12 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero }) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
+
+      {isEditing && (
+        <div className="px-4 py-2.5 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700 font-medium">
+          Editando presupuesto #{initialData?.numero}
+        </div>
+      )}
 
       {/* Cliente */}
       <section className="bg-white rounded-2xl p-5 shadow-sm">
@@ -252,7 +259,7 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero }) {
         </div>
       </section>
 
-      {/* Servicios adicionales (linea manual) */}
+      {/* Servicios adicionales */}
       <section className="bg-white rounded-2xl p-5 shadow-sm">
         <div style={sec}>Servicios adicionales</div>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 items-end">
@@ -313,7 +320,7 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero }) {
       </section>
 
       <button type="submit" className="w-full py-3 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-semibold text-base transition-colors">
-        Ver presupuesto
+        {isEditing ? 'Guardar cambios' : 'Ver presupuesto'}
       </button>
     </form>
   )
