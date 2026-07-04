@@ -28,7 +28,7 @@ const FIN_SEMANA_KEY = {
 
 /**
  * Recorre el rango [inicio, fin] día a día y clasifica cada día
- * como entre semana (lunes-viernes) o fin de semana (sábado-domingo).
+ * como entre semana (lunes-jueves) o fin de semana (viernes-domingo).
  *
  * @param {string} inicio - Fecha en formato "YYYY-MM-DD"
  * @param {string} fin    - Fecha en formato "YYYY-MM-DD"
@@ -43,8 +43,8 @@ function splitDias(inicio, fin) {
   const end = new Date(fin + 'T00:00:00')
   let entresemana = 0, finSemana = 0
   while (d <= end) {
-    const day = d.getDay() // 0 = domingo, 6 = sábado
-    if (day === 0 || day === 6) finSemana++
+    const day = d.getDay() // 0 = domingo, 5 = viernes, 6 = sábado
+    if (day === 0 || day === 5 || day === 6) finSemana++
     else entresemana++
     d.setDate(d.getDate() + 1)
   }

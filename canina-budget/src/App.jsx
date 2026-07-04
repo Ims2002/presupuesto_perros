@@ -43,6 +43,12 @@ export default function App() {
   const [editData, setEditData] = useState(null)   // datos pre-cargados en el formulario al editar
   const [editId, setEditId] = useState(null)       // UUID del registro de Supabase que se está editando
 
+  // Se usa como "key" de PresupuestoForm para forzar un montaje nuevo (formulario
+  // en blanco) solo cuando el usuario pulsa "+ Nuevo". Si nos limitáramos a poner
+  // editData a null, y ya estaba a null (caso de un presupuesto nuevo, no de edición),
+  // React no detectaría cambio y el formulario conservaría lo que había escrito.
+  const [formKey, setFormKey] = useState(0)
+
   // --- Dispositivo ---
   const [dispositivo, setDispositivo] = useState(getDispositivo)
   // Si no hay nombre de dispositivo guardado, muestra el modal al arrancar
@@ -79,7 +85,11 @@ export default function App() {
    * - Si hay editId activo: actualiza el registro existente en Supabase (UPDATE).
    * - Si no hay editId: crea un registro nuevo (INSERT) e incrementa el contador.
    *
-   * En ambos casos muestra la vista de preview y limpia el estado de edición.
+   * En ambos casos muestra la vista de preview. El estado de edición (editData/editId)
+   * se mantiene intacto a propósito: si el usuario pulsa "Volver al formulario" desde
+   * el preview, debe ver el formulario tal y como lo dejó (mismos datos, mismo modo
+   * edición/nuevo). Solo se limpia explícitamente al pulsar "+ Nuevo" (handleNuevo)
+   * o al editar otro presupuesto distinto desde el historial.
    */
   async function handleGenerar(datos) {
     const disp = getDispositivo()
@@ -120,8 +130,6 @@ export default function App() {
 
     setPresupuesto(datos)
     setVista('preview')
-    setEditData(null)
-    setEditId(null)
   }
 
   /**
@@ -169,6 +177,7 @@ export default function App() {
   function handleNuevo() {
     setEditData(null)
     setEditId(null)
+    setFormKey(k => k + 1) // fuerza remontar el formulario en blanco, aunque ya estuviera en null
     setVista('form')
   }
 
@@ -270,15 +279,22 @@ export default function App() {
 
       {/* Área de contenido principal — renderiza la vista activa */}
       <main style={{ maxWidth: 720, margin: '0 auto', padding: '24px 16px' }}>
-        {vista === 'form' && (
+        {/*
+          El formulario se mantiene siempre montado (solo se oculta con CSS) en lugar
+          de desmontarse al cambiar de vista. Si se desmontara, al volver desde el
+          preview perdería todo su estado interno (líneas añadidas, fechas, etc.),
+          ya que se crearía una instancia completamente nueva del componente.
+        */}
+        <div style={{ display: vista === 'form' ? 'block' : 'none' }}>
           <PresupuestoForm
+            key={formKey}         // cambia solo al pulsar "+ Nuevo": fuerza formulario en blanco
             tarifas={tarifas}
             onGenerar={handleGenerar}
             ultimoNumero={ultimoNumero}
             initialData={editData}   // null = nuevo, objeto = edición
             isEditing={!!editId}     // true cuando hay un UUID de edición activo
           />
-        )}
+        </div>
         {vista === 'preview' && presupuesto && (
           <PresupuestoPreview presupuesto={presupuesto} onBack={() => setVista('form')} />
         )}

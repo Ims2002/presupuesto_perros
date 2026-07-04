@@ -20,6 +20,12 @@ export default function Historial({ onEditar, onVer }) {
   const [error, setError] = useState(null)             // mensaje de error si falla la consulta
   const [busqueda, setBusqueda] = useState('')         // texto del buscador
 
+  // --- Eliminación con doble confirmación ---
+  const [pendingDelete, setPendingDelete] = useState(null) // presupuesto seleccionado para borrar (o null)
+  const [confirmStep, setConfirmStep] = useState(1)        // 1 = primer aviso, 2 = aviso definitivo
+  const [deleting, setDeleting] = useState(false)          // true mientras se ejecuta el DELETE
+  const [deleteError, setDeleteError] = useState(null)     // mensaje de error si falla el borrado
+
   // Al montar el componente, trae todos los presupuestos de Supabase
   // ordenados del más reciente al más antiguo
   useEffect(() => {
@@ -35,6 +41,41 @@ export default function Historial({ onEditar, onVer }) {
     }
     fetch()
   }, []) // [] → solo se ejecuta una vez al montar, no en cada re-render
+
+  // Abre el popup de confirmación para el presupuesto indicado, siempre
+  // empezando por el primer paso (aviso simple).
+  function pedirEliminacion(p) {
+    setDeleteError(null)
+    setConfirmStep(1)
+    setPendingDelete(p)
+  }
+
+  // Cierra el popup sin borrar nada.
+  function cancelarEliminacion() {
+    setPendingDelete(null)
+    setConfirmStep(1)
+    setDeleteError(null)
+  }
+
+  // Botón "Eliminar" del popup: en el paso 1 solo avanza al paso 2 (aviso
+  // definitivo); en el paso 2 ejecuta el borrado real contra Supabase.
+  async function confirmarEliminacion() {
+    if (confirmStep === 1) {
+      setConfirmStep(2)
+      return
+    }
+    setDeleting(true)
+    setDeleteError(null)
+    const { error } = await supabase.from('presupuestos').delete().eq('id', pendingDelete.id)
+    setDeleting(false)
+    if (error) {
+      setDeleteError(error.message)
+      return
+    }
+    setPresupuestos(prev => prev.filter(p => p.id !== pendingDelete.id))
+    setPendingDelete(null)
+    setConfirmStep(1)
+  }
 
   // Filtra en memoria los presupuestos según el texto del buscador.
   // Compara contra nombre del cliente, mascota y número de presupuesto.
@@ -122,6 +163,13 @@ export default function Historial({ onEditar, onVer }) {
                   >
                     Ver PDF
                   </button>
+                  {/* Abre el popup de doble confirmación antes de borrar nada */}
+                  <button
+                    onClick={() => pedirEliminacion(p)}
+                    className="text-xs px-3 py-1.5 border border-red-200 rounded-lg text-red-500 hover:bg-red-50 transition-colors"
+                  >
+                    Eliminar
+                  </button>
                 </div>
               </div>
 
@@ -129,6 +177,52 @@ export default function Historial({ onEditar, onVer }) {
           </div>
         )
       })}
+
+      {/* Popup de doble confirmación antes de eliminar un presupuesto del historial */}
+      {pendingDelete && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            {confirmStep === 1 ? (
+              <>
+                <h3 className="text-base font-semibold text-gray-800 mb-2">¿Eliminar presupuesto?</h3>
+                <p className="text-sm text-gray-500 mb-6">
+                  Vas a eliminar el presupuesto <span className="font-mono font-semibold">#{pendingDelete.numero}</span>
+                  {pendingDelete.cliente?.nombre ? <> de <span className="font-medium">{pendingDelete.cliente.nombre}</span></> : null}.
+                </p>
+              </>
+            ) : (
+              <>
+                <h3 className="text-base font-semibold text-red-600 mb-2">Esta acción no se puede deshacer</h3>
+                <p className="text-sm text-gray-500 mb-6">
+                  El presupuesto <span className="font-mono font-semibold">#{pendingDelete.numero}</span> se borrará
+                  definitivamente del historial. Confirma para eliminarlo.
+                </p>
+              </>
+            )}
+
+            {deleteError && (
+              <p className="text-xs text-red-500 mb-4">Error al eliminar: {deleteError}</p>
+            )}
+
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={cancelarEliminacion}
+                disabled={deleting}
+                className="text-xs px-3 py-2 border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50 transition-colors disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmarEliminacion}
+                disabled={deleting}
+                className="text-xs px-3 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
+              >
+                {deleting ? 'Eliminando...' : confirmStep === 1 ? 'Continuar' : 'Eliminar definitivamente'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
