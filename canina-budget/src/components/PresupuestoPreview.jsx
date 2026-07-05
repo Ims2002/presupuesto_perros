@@ -124,13 +124,52 @@ export default function PresupuestoPreview({ presupuesto, onBack, logoSrc }) {
         </button>
       </div>
 
+      {/*
+        Variables CSS para el padding/tipografía del documento. En pantallas
+        estrechas (≤480px) se reducen para que la vista previa quepa bien en
+        el móvil. Al generar el PDF, html2canvas clona el documento con
+        windowWidth forzado a DESKTOP_WIDTH + 40 (720px, ver downloadPDF), así
+        que esta media query nunca se activa durante la captura: el PDF
+        siempre sale con el diseño de escritorio, sin importar el móvil.
+      */}
+      <style>{`
+        .presupuesto-doc {
+          --doc-px: 44px;
+          --doc-header-pt: 36px;
+          --doc-header-pb: 24px;
+          --doc-title-size: 42px;
+          --doc-total-px: 28px;
+          --doc-total-py: 15px;
+          --doc-total-font: 13px;
+          --doc-total-amount-font: 22px;
+          --doc-total-tracking: 0.3em;
+          --doc-footer-px: 24px;
+          --doc-footer-py: 20px;
+        }
+        @media (max-width: 480px) {
+          .presupuesto-doc {
+            --doc-px: 18px;
+            --doc-header-pt: 24px;
+            --doc-header-pb: 16px;
+            --doc-title-size: 28px;
+            --doc-total-px: 14px;
+            --doc-total-py: 12px;
+            --doc-total-font: 11px;
+            --doc-total-amount-font: 18px;
+            --doc-total-tracking: 0.12em;
+            --doc-footer-px: 14px;
+            --doc-footer-py: 14px;
+          }
+        }
+      `}</style>
+
       {/* Documento imprimible — html2canvas captura este div */}
-      <div id="print-area" style={{ background: 'white', maxWidth: 680, margin: '0 auto', fontFamily: FONT, color: C.body, boxShadow: '0 2px 20px rgba(0,0,0,0.08)', borderRadius: 4 }}>
+      <div id="print-area" className="presupuesto-doc" style={{ background: 'white', maxWidth: 680, margin: '0 auto', fontFamily: FONT, color: C.body, boxShadow: '0 2px 20px rgba(0,0,0,0.08)', borderRadius: 4 }}>
 
         {/* CABECERA: título + datos del cliente a la izquierda, logo/fechas/número a la derecha */}
-        <div style={{ padding: '36px 44px 24px', borderBottom: `2px solid ${C.tan}`, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div style={{ padding: 'var(--doc-header-pt) var(--doc-px) var(--doc-header-pb)', borderBottom: `2px solid ${C.tan}`, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <div style={{ fontSize: 42, fontWeight: 800, color: C.title, lineHeight: 1, letterSpacing: '-1.5px', textTransform: 'uppercase', fontFamily: FONT }}>
+            <div style={{ fontSize: 'var(--doc-title-size)', fontWeight: 800, color: C.title, lineHeight: 1, letterSpacing: '-1.5px', textTransform: 'uppercase', fontFamily: FONT }}>
               Presupuesto
             </div>
             <div style={{ fontSize: 15, color: C.accent, marginTop: 8, fontWeight: 400 }}>
@@ -156,7 +195,7 @@ export default function PresupuestoPreview({ presupuesto, onBack, logoSrc }) {
         </div>
 
         {/* TABLA DE LÍNEAS */}
-        <div style={{ padding: '4px 44px 0' }}>
+        <div style={{ padding: '4px var(--doc-px) 0' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0 8px', borderBottom: `1px solid ${C.tan}` }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: C.body, letterSpacing: '0.01em' }}>Descripcion</div>
             <div style={{ fontSize: 13, fontWeight: 600, color: C.body, letterSpacing: '0.01em' }}>Total</div>
@@ -187,17 +226,17 @@ export default function PresupuestoPreview({ presupuesto, onBack, logoSrc }) {
         </div>
 
         {/* BARRA DE TOTAL */}
-        <div style={{ margin: '28px 44px 0', background: C.totalBg, display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 28px' }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'white', letterSpacing: '0.3em', textTransform: 'uppercase', fontFamily: FONT }}>
+        <div style={{ margin: '28px var(--doc-px) 0', background: C.totalBg, display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--doc-total-py) var(--doc-total-px)' }}>
+          <div style={{ fontSize: 'var(--doc-total-font)', fontWeight: 700, color: 'white', letterSpacing: 'var(--doc-total-tracking)', textTransform: 'uppercase', fontFamily: FONT, whiteSpace: 'nowrap' }}>
             T O T A L :
           </div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: 'white', letterSpacing: '0.08em', fontFamily: FONT }}>
+          <div style={{ fontSize: 'var(--doc-total-amount-font)', fontWeight: 700, color: 'white', letterSpacing: '0.08em', fontFamily: FONT, whiteSpace: 'nowrap' }}>
             {total.toFixed(0)} EUR
           </div>
         </div>
 
         {/* SECCIÓN PAGO + CONTACTO — datos configurable desde data/config.js */}
-        <div style={{ display: 'flex', margin: '28px 44px 0', background: C.footerBg, padding: '20px 24px', borderRadius: 2 }}>
+        <div style={{ display: 'flex', margin: '28px var(--doc-px) 0', background: C.footerBg, padding: 'var(--doc-footer-py) var(--doc-footer-px)', borderRadius: 2 }}>
           <div style={{ flex: 1, paddingRight: 28, borderRight: `1px solid ${C.tan}` }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: C.title, marginBottom: 12, fontFamily: FONT }}>
               Informacion para el pago
@@ -222,14 +261,14 @@ export default function PresupuestoPreview({ presupuesto, onBack, logoSrc }) {
 
         {/* NOTAS — se renderizan con pre-line para respetar los saltos de línea del textarea */}
         {notas && (
-          <div style={{ margin: '20px 44px 0', padding: '12px 16px', background: C.footerBg, borderLeft: `3px solid ${C.tan}`, fontSize: 12, color: C.muted, whiteSpace: 'pre-line', fontFamily: FONT }}>
+          <div style={{ margin: '20px var(--doc-px) 0', padding: '12px 16px', background: C.footerBg, borderLeft: `3px solid ${C.tan}`, fontSize: 12, color: C.muted, whiteSpace: 'pre-line', fontFamily: FONT }}>
             <strong style={{ display: 'block', marginBottom: 4, color: C.body, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Notas</strong>
             {notas}
           </div>
         )}
 
         {/* POLÍTICAS — lista configurable desde data/config.js */}
-        <div style={{ margin: '24px 44px 36px', borderTop: `1px solid ${C.tan}`, paddingTop: 16 }}>
+        <div style={{ margin: '24px var(--doc-px) 36px', borderTop: `1px solid ${C.tan}`, paddingTop: 16 }}>
           <ul style={{ margin: 0, padding: 0, paddingLeft: 16, fontSize: 11, color: C.muted, lineHeight: 1.8, fontFamily: FONT }}>
             {cfg.politicas.map((p, i) => (
               <li key={i} style={{ marginBottom: 4 }}>{p}</li>
