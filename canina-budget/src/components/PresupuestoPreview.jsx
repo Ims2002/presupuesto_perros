@@ -34,43 +34,63 @@ const C = {
  *      "Descargar PDF") para no incrementar el bundle inicial de la app.
  *   2. Renderiza el div#print-area a un canvas con escala x2 (alta resolución).
  *   3. Calcula la altura proporcional de la imagen respecto al ancho A4.
- *   4. Si la imagen cabe en una sola página, la inserta directamente.
- *      Si no (presupuesto largo), la divide en páginas desplazando posY:
- *      en cada página se añade la imagen completa pero offset verticalmente
- *      para mostrar solo el fragmento correspondiente a esa página.
+ *   4. El PDF es siempre de una única página: si el contenido no cabe entero
+ *      a ancho completo, se reduce la imagen (manteniendo proporción, ajustada
+ *      a la altura de la página) y se centra horizontalmente.
  *
  * @param {string} numero - Número del presupuesto, usado en el nombre del archivo.
  */
+// Ancho de diseño del documento (debe coincidir con el maxWidth de #print-area).
+// En pantallas móviles el div se encoge para caber en el viewport (maxWidth es
+// un límite superior, no un ancho fijo), lo que hace que html2canvas capture el
+// documento comprimido: paddings y tipografías pensados para 680px quedan
+// apretados en ~340px. Forzamos este ancho fijo solo durante la captura para
+// que el PDF salga siempre con el mismo diseño, se genere desde el móvil o desde
+// el escritorio.
+const DESKTOP_WIDTH = 680
+
 async function downloadPDF(numero) {
   const { default: html2canvas } = await import('html2canvas')
   const { default: jsPDF } = await import('jspdf')
 
   const el = document.getElementById('print-area')
   // scale: 2 → doble resolución para que el PDF no se vea pixelado al imprimir
-  const canvas = await html2canvas(el, { scale: 2, useCORS: true, backgroundColor: '#ffffff' })
+  const canvas = await html2canvas(el, {
+    scale: 2,
+    useCORS: true,
+    backgroundColor: '#ffffff',
+    // Da margen a la ventana del clon para que no haya nada que fuerce un
+    // ancho más estrecho antes de que se aplique el estilo de onclone.
+    windowWidth: DESKTOP_WIDTH + 40,
+    onclone: (clonedDoc) => {
+      const clonedEl = clonedDoc.getElementById('print-area')
+      if (clonedEl) {
+        // Ancho explícito en px (no maxWidth): así no depende del ancho real
+        // del contenedor padre en el dispositivo desde el que se genera.
+        clonedEl.style.width = `${DESKTOP_WIDTH}px`
+      }
+    },
+  })
   const imgData = canvas.toDataURL('image/png')
 
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
   const pageW = pdf.internal.pageSize.getWidth()   // 210 mm
   const pageH = pdf.internal.pageSize.getHeight()  // 297 mm
-  // Altura de la imagen manteniendo la proporción del canvas al ancho A4
-  const imgH = (canvas.height * pageW) / canvas.width
 
-  let posY = 0
-  if (imgH <= pageH) {
-    // Caso simple: todo el contenido cabe en una página
-    pdf.addImage(imgData, 'PNG', 0, 0, pageW, imgH)
-  } else {
-    // Caso multi-página: se repite la imagen completa desplazada hacia arriba
-    // en cada página para "mostrar" el trozo correspondiente
-    let remaining = imgH
-    while (remaining > 0) {
-      pdf.addImage(imgData, 'PNG', 0, -posY, pageW, imgH)
-      remaining -= pageH
-      posY += pageH
-      if (remaining > 0) pdf.addPage()
-    }
+  // Tamaño de la imagen a ancho completo de página, manteniendo proporción
+  let imgW = pageW
+  let imgH = (canvas.height * pageW) / canvas.width
+
+  // Si a ancho completo no entra en una página, se reduce ajustando a la
+  // altura de la página (en vez de partir el documento en varias páginas)
+  if (imgH > pageH) {
+    imgH = pageH
+    imgW = (canvas.width * pageH) / canvas.height
   }
+
+  // Centrado horizontal; alineado arriba verticalmente
+  const x = (pageW - imgW) / 2
+  pdf.addImage(imgData, 'PNG', x, 0, imgW, imgH)
   pdf.save(`presupuesto-${numero}.pdf`)
 }
 
