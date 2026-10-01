@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { fetchConLog } from './httpLog'
 
 /**
  * Cliente singleton de Supabase compartido por toda la app.
@@ -9,10 +10,11 @@ import { createClient } from '@supabase/supabase-js'
  *     Solo puede operar dentro de los límites que fijen las políticas RLS
  *     definidas en Supabase; nunca expone datos protegidos por sí sola.
  *
- * Importar desde cualquier componente:
- *   import { supabase } from '../lib/supabase'
+ * No se importa directamente desde los componentes: todo el acceso a datos
+ * pasa por lib/presupuestosRepo.js.
  */
 export const supabase = createClient(
   'https://hyafzdpzdspnzckatmyq.supabase.co',
-  'sb_publishable_yV-kM8RdSkOe2rzlL4RA3g_-akw9lmY'
+  'sb_publishable_yV-kM8RdSkOe2rzlL4RA3g_-akw9lmY',
+  { global: { fetch: fetchConLog } }
 )

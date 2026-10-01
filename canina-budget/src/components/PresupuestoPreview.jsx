@@ -1,4 +1,8 @@
+import { useState } from 'react'
 import { getConfig } from '../data/config'
+import { createLogger } from '../lib/logger'
+
+const log = createLogger('pdf')
 
 /** Convierte "YYYY-MM-DD" a "DD/MM/YYYY" para mostrar en el documento. */
 function fmt(dateStr) {
@@ -50,10 +54,22 @@ const C = {
 const DESKTOP_WIDTH = 680
 
 async function downloadPDF(numero) {
+  const t = log.time('Generar PDF', { numero })
+  try {
+    await generarPDF(numero)
+    t.end()
+  } catch (err) {
+    t.fail(err)
+    throw err
+  }
+}
+
+async function generarPDF(numero) {
   const { default: html2canvas } = await import('html2canvas')
   const { default: jsPDF } = await import('jspdf')
 
   const el = document.getElementById('print-area')
+  if (!el) throw new Error('No se encuentra el documento (#print-area) en la página')
   // scale: 2 → doble resolución para que el PDF no se vea pixelado al imprimir
   const canvas = await html2canvas(el, {
     scale: 2,
@@ -71,6 +87,7 @@ async function downloadPDF(numero) {
       }
     },
   })
+  log.debug('Captura del documento', { ancho: canvas.width, alto: canvas.height })
   const imgData = canvas.toDataURL('image/png')
 
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
@@ -100,27 +117,42 @@ async function downloadPDF(numero) {
  *
  * Props:
  *   presupuesto - Objeto con todos los datos del presupuesto
- *   onBack      - Callback para volver al formulario
+ *   onBack      - Callback para volver (al formulario o al historial)
+ *   backLabel   - Texto del botón de volver
  *   logoSrc     - (opcional) URL de imagen del logo; si no se pasa, muestra texto
  */
-export default function PresupuestoPreview({ presupuesto, onBack, logoSrc }) {
+export default function PresupuestoPreview({ presupuesto, onBack, backLabel = 'Volver al formulario', logoSrc }) {
+  const [generando, setGenerando] = useState(false) // evita lanzar dos PDFs a la vez
   const { cliente, mascota, fechaInicio, fechaFin, lineas, notas, numero } = presupuesto
   const total = lineas.reduce((s, l) => s + (l.subtotal ?? 0), 0)
   // cfg contiene bizum, contactos y políticas configurables desde data/config.js
   const cfg = getConfig()
+
+  async function handleDescargar() {
+    if (generando) return
+    setGenerando(true)
+    try {
+      await downloadPDF(numero)
+    } catch (err) {
+      alert(`No se pudo generar el PDF: ${err?.message || err}`)
+    } finally {
+      setGenerando(false)
+    }
+  }
 
   return (
     <div>
       {/* Barra de acciones — se oculta al imprimir con la clase no-print */}
       <div className="no-print" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <button onClick={onBack} style={{ fontSize: 13, color: C.muted, background: 'none', border: 'none', cursor: 'pointer' }}>
-          Volver al formulario
+          {backLabel}
         </button>
         <button
-          onClick={() => downloadPDF(numero)}
-          style={{ fontSize: 13, padding: '9px 22px', background: C.totalBg, color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, letterSpacing: '0.04em', fontFamily: FONT }}
+          onClick={handleDescargar}
+          disabled={generando}
+          style={{ fontSize: 13, padding: '9px 22px', background: C.totalBg, color: 'white', border: 'none', borderRadius: 8, cursor: generando ? 'wait' : 'pointer', opacity: generando ? 0.7 : 1, fontWeight: 600, letterSpacing: '0.04em', fontFamily: FONT }}
         >
-          Descargar PDF
+          {generando ? 'Generando...' : 'Descargar PDF'}
         </button>
       </div>
 

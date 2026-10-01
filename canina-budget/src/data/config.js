@@ -1,3 +1,7 @@
+import { createLogger } from '../lib/logger'
+
+const log = createLogger('config')
+
 export const configDefault = {
   bizum: '+34 644159343',
   contactos: [
@@ -16,7 +20,10 @@ export function getConfig() {
   try {
     const s = localStorage.getItem('config_canina')
     return s ? JSON.parse(s) : configDefault
-  } catch { return configDefault }
+  } catch (err) {
+    log.warn('Configuración guardada ilegible; se usa la de por defecto', { error: err })
+    return configDefault
+  }
 }
 
 export function saveConfig(cfg) {

@@ -1,5 +1,8 @@
-import { useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
+import { useState, useEffect, useMemo } from 'react'
+import { listarPresupuestos, eliminarPresupuesto, mensajeError } from '../lib/presupuestosRepo'
+import { createLogger } from '../lib/logger'
+
+const log = createLogger('historial')
 
 // Convierte "YYYY-MM-DD" a "DD/MM/YYYY" para mostrar en pantalla
 function fmt(dateStr) {
@@ -11,11 +14,12 @@ function fmt(dateStr) {
 // Clases Tailwind reutilizables para el input de búsqueda
 const inp = 'border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-400'
 
-// Recibe dos callbacks desde App.jsx:
-//   onEditar(p) → carga el presupuesto en el formulario para editarlo
-//   onVer(p)    → abre la vista de preview/PDF
-export default function Historial({ onEditar, onVer }) {
-  const [presupuestos, setPresupuestos] = useState([]) // todos los registros de Supabase
+// Recibe callbacks desde App.jsx:
+//   onEditar(p)    → carga el presupuesto en el formulario para editarlo
+//   onVer(p)       → abre la vista de preview/PDF
+//   onEliminado(p) → avisa de que se ha borrado (por si estaba abierto en el formulario)
+export default function Historial({ onEditar, onVer, onEliminado }) {
+  const [presupuestos, setPresupuestos] = useState([]) // todos los registros de la base de datos
   const [loading, setLoading] = useState(true)         // estado de carga inicial
   const [error, setError] = useState(null)             // mensaje de error si falla la consulta
   const [busqueda, setBusqueda] = useState('')         // texto del buscador
@@ -26,25 +30,49 @@ export default function Historial({ onEditar, onVer }) {
   const [deleting, setDeleting] = useState(false)          // true mientras se ejecuta el DELETE
   const [deleteError, setDeleteError] = useState(null)     // mensaje de error si falla el borrado
 
-  // Al montar el componente, trae todos los presupuestos de Supabase
-  // ordenados del más reciente al más antiguo
+  const [recarga, setRecarga] = useState(0)                // al incrementarlo se vuelve a cargar la lista
+
+  // Al montar el componente (y al pulsar "Reintentar"), trae todos los
+  // presupuestos ordenados del más reciente al más antiguo.
+  // "cancelado" evita actualizar el estado si el componente ya se desmontó
+  // (cambio rápido de vista o doble montaje de React StrictMode en desarrollo).
   useEffect(() => {
-    async function fetch() {
+    let cancelado = false
+    async function cargar() {
       setLoading(true)
-      const { data, error } = await supabase
-        .from('presupuestos')
-        .select('*')
-        .order('created_at', { ascending: false })
-      if (error) setError(error.message)
-      else setPresupuestos(data)
-      setLoading(false)
+      setError(null)
+      try {
+        const data = await listarPresupuestos()
+        if (!cancelado) setPresupuestos(data)
+      } catch (err) {
+        log.error('No se pudo cargar el historial', { error: err })
+        if (!cancelado) setError(mensajeError(err))
+      } finally {
+        if (!cancelado) setLoading(false)
+      }
     }
-    fetch()
-  }, []) // [] → solo se ejecuta una vez al montar, no en cada re-render
+    cargar()
+    return () => { cancelado = true }
+  }, [recarga])
+
+  // Números que aparecen más de una vez. Ayuda a localizar duplicados
+  // antiguos (creados antes de la corrección) o colisiones entre dispositivos.
+  const numerosRepetidos = useMemo(() => {
+    const cuenta = {}
+    presupuestos.forEach(p => { cuenta[p.numero] = (cuenta[p.numero] || 0) + 1 })
+    return new Set(Object.keys(cuenta).filter(n => cuenta[n] > 1))
+  }, [presupuestos])
+
+  useEffect(() => {
+    if (numerosRepetidos.size > 0) {
+      log.warn('Hay números de presupuesto repetidos en el historial', { numeros: [...numerosRepetidos] })
+    }
+  }, [numerosRepetidos])
 
   // Abre el popup de confirmación para el presupuesto indicado, siempre
   // empezando por el primer paso (aviso simple).
   function pedirEliminacion(p) {
+    log.info('Pedir eliminación', { id: p.id, numero: p.numero })
     setDeleteError(null)
     setConfirmStep(1)
     setPendingDelete(p)
@@ -52,29 +80,37 @@ export default function Historial({ onEditar, onVer }) {
 
   // Cierra el popup sin borrar nada.
   function cancelarEliminacion() {
+    log.info('Eliminación cancelada', { id: pendingDelete?.id, paso: confirmStep })
     setPendingDelete(null)
     setConfirmStep(1)
     setDeleteError(null)
   }
 
   // Botón "Eliminar" del popup: en el paso 1 solo avanza al paso 2 (aviso
-  // definitivo); en el paso 2 ejecuta el borrado real contra Supabase.
+  // definitivo); en el paso 2 ejecuta el borrado real.
   async function confirmarEliminacion() {
+    if (deleting) return
     if (confirmStep === 1) {
       setConfirmStep(2)
       return
     }
+    const borrado = pendingDelete
     setDeleting(true)
     setDeleteError(null)
-    const { error } = await supabase.from('presupuestos').delete().eq('id', pendingDelete.id)
-    setDeleting(false)
-    if (error) {
-      setDeleteError(error.message)
+    try {
+      await eliminarPresupuesto(borrado.id, borrado.numero)
+    } catch (err) {
+      setDeleteError(mensajeError(err))
+      // Si no se borró nada, puede que ya no existiera: se recarga la lista
+      if (err.code === 'SIN_FILAS') setRecarga(r => r + 1)
       return
+    } finally {
+      setDeleting(false)
     }
-    setPresupuestos(prev => prev.filter(p => p.id !== pendingDelete.id))
+    setPresupuestos(prev => prev.filter(p => p.id !== borrado.id))
     setPendingDelete(null)
     setConfirmStep(1)
+    onEliminado?.(borrado)
   }
 
   // Filtra en memoria los presupuestos según el texto del buscador.
@@ -84,13 +120,13 @@ export default function Historial({ onEditar, onVer }) {
     return (
       (p.cliente?.nombre || '').toLowerCase().includes(s) ||
       (p.mascota || '').toLowerCase().includes(s) ||
-      p.numero.includes(s)
+      String(p.numero ?? '').includes(s)
     )
   })
 
   return (
     <div className="space-y-4">
-      {/* Buscador — filtra la lista sin hacer nuevas llamadas a Supabase */}
+      {/* Buscador — filtra la lista sin hacer nuevas llamadas a la base de datos */}
       <input
         className={`${inp} w-full`}
         placeholder="Buscar por cliente, mascota o número..."
@@ -100,7 +136,25 @@ export default function Historial({ onEditar, onVer }) {
 
       {/* Estados de carga y error */}
       {loading && <div className="text-center py-16 text-gray-400 text-sm">Cargando...</div>}
-      {error && <div className="text-center py-16 text-red-400 text-sm">Error: {error}</div>}
+      {error && (
+        <div className="text-center py-16 text-red-400 text-sm">
+          <div>Error: {error}</div>
+          <button
+            onClick={() => setRecarga(r => r + 1)}
+            className="mt-3 text-xs px-3 py-1.5 border border-red-200 rounded-lg text-red-500 hover:bg-red-50"
+          >
+            Reintentar
+          </button>
+        </div>
+      )}
+
+      {/* Aviso de números repetidos (duplicados antiguos o colisiones) */}
+      {!loading && !error && numerosRepetidos.size > 0 && (
+        <div className="px-4 py-2.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-600">
+          Hay presupuestos con el número repetido ({[...numerosRepetidos].map(n => `#${n}`).join(', ')}).
+          Revisa los marcados como «repetido» y elimina los que sobren.
+        </div>
+      )}
 
       {/* Lista vacía: mensaje diferente si hay búsqueda activa o si no hay datos aún */}
       {!loading && !error && filtrados.length === 0 && (
@@ -111,13 +165,14 @@ export default function Historial({ onEditar, onVer }) {
 
       {/* Lista de tarjetas, una por presupuesto */}
       {!loading && !error && filtrados.map(p => {
-        // Usa el total guardado en Supabase; si no existe (registros antiguos),
+        // Usa el total guardado; si no existe (registros antiguos),
         // lo recalcula sumando los subtotales de las líneas
         const total = p.total ?? p.lineas?.reduce((s, l) => s + (l.subtotal ?? 0), 0) ?? 0
 
         // Formatea la fecha de creación en español (DD/MM/YYYY)
-        const creado = new Date(p.created_at).toLocaleDateString('es-ES', {
-          day: '2-digit', month: '2-digit', year: 'numeric'
+        // Incluye la hora: ayuda a distinguir presupuestos parecidos o repetidos
+        const creado = new Date(p.created_at).toLocaleString('es-ES', {
+          day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
         })
 
         return (
@@ -128,6 +183,9 @@ export default function Historial({ onEditar, onVer }) {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                   <span className="text-xs font-mono font-bold text-amber-600">#{p.numero}</span>
+                  {numerosRepetidos.has(p.numero) && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-600 font-semibold uppercase">repetido</span>
+                  )}
                   <span className="text-sm font-semibold text-gray-800">
                     {p.cliente?.nombre || <span className="text-gray-400 font-normal italic">Sin nombre</span>}
                   </span>
@@ -148,7 +206,7 @@ export default function Historial({ onEditar, onVer }) {
               <div className="text-right shrink-0">
                 <div className="font-bold text-gray-800 text-sm mb-2.5">{total.toFixed(0)} EUR</div>
                 <div className="flex gap-2">
-                  {/* Llama a onEditar con el registro completo de Supabase;
+                  {/* Llama a onEditar con el registro completo;
                       App.jsx lo mapea al formato del formulario */}
                   <button
                     onClick={() => onEditar(p)}

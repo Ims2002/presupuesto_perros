@@ -1,4 +1,7 @@
 import { useState, useEffect } from 'react'
+import { createLogger } from '../lib/logger'
+
+const log = createLogger('form')
 
 /**
  * Catálogo de tipos de estancia disponibles.
@@ -65,8 +68,9 @@ const sec = { fontWeight: 600, color: '#374151', marginBottom: 16, fontSize: 14 
  *   ultimoNumero - Último número usado; se incrementa para el nuevo presupuesto
  *   initialData  - Si se pasa, pre-rellena todos los campos (modo edición)
  *   isEditing    - true cuando se está editando un presupuesto existente
+ *   guardando    - true mientras App está guardando: el botón se deshabilita
  */
-export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, initialData, isEditing }) {
+export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, initialData, isEditing, guardando = false }) {
   // --- Datos principales del presupuesto ---
   const [cliente, setCliente] = useState({ nombre: '' })
   const [mascota, setMascota] = useState('')
@@ -98,6 +102,7 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, init
    * Cuando initialData es null (nuevo presupuesto), resetea todos los campos.
    */
   useEffect(() => {
+    log.debug(initialData ? 'Formulario cargado con datos' : 'Formulario en blanco', initialData ? { numero: initialData.numero, lineas: initialData.lineas?.length ?? 0 } : undefined)
     if (initialData) {
       setCliente(initialData.cliente || { nombre: '' })
       setMascota(initialData.mascota || '')
@@ -190,6 +195,7 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, init
    * @param {number|null} precioUnit
    */
   function addLinea(descripcion, subfecha, cantidad, precioUnit) {
+    log.debug('Línea añadida', { descripcion, cantidad: Number(cantidad), precioUnit })
     setLineas(prev => [...prev, {
       descripcion,
       subfecha: subfecha || '',
@@ -201,6 +207,7 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, init
 
   /** Elimina la línea en la posición i del resumen. */
   function removeLinea(i) {
+    log.debug('Línea eliminada', { indice: i })
     setLineas(prev => prev.filter((_, idx) => idx !== i))
   }
 
@@ -231,25 +238,47 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, init
    *
    * El número de presupuesto se determina aquí:
    *   - Edición: se mantiene el número original de initialData
-   *   - Nuevo: se incrementa ultimoNumero y se formatea con ceros ("0001")
-   *
-   * El incremento real del contador en localStorage lo gestiona App.jsx
-   * dentro de handleGenerar, una vez confirmado el INSERT en Supabase.
+   *   - Nuevo: número PREVISTO (ultimoNumero + 1, con ceros: "0001"). El
+   *     definitivo lo asigna la capa de datos al guardar, consultando el
+   *     máximo en remoto en ese momento (puede variar si otro dispositivo
+   *     guardó antes).
    */
   function handleSubmit(e) {
     e.preventDefault()
-    if (lineas.length === 0) return alert('Añade al menos un servicio.')
+    if (guardando) {
+      log.warn('Envío ignorado: el formulario ya se está guardando')
+      return
+    }
+    if (lineas.length === 0) {
+      log.info('Envío bloqueado: el presupuesto no tiene líneas')
+      return alert('Añade al menos un servicio.')
+    }
     const numero = isEditing
       ? initialData.numero
       : String(ultimoNumero + 1).padStart(4, '0')
+    log.debug('Formulario enviado', { modo: isEditing ? 'editar' : 'crear', numero, lineas: lineas.length })
     onGenerar({ cliente, mascota, fechaInicio, fechaFin, notas, lineas, numero })
+  }
+
+  /**
+   * Evita que la tecla Intro dentro de un campo envíe (y guarde) el
+   * presupuesto. Es el comportamiento por defecto de los formularios HTML y en
+   * el móvil es muy fácil pulsar "Ir"/"Intro" sin querer: se guardaba un
+   * presupuesto a medias y, al terminarlo y enviarlo, aparecía otro más.
+   * Solo el botón de abajo guarda. En los textarea Intro sigue haciendo salto de línea.
+   */
+  function bloquearIntro(e) {
+    if (e.key === 'Enter' && e.target.tagName === 'INPUT') {
+      e.preventDefault()
+      log.debug('Intro bloqueado en un campo (no envía el formulario)', { campo: e.target.placeholder || e.target.type })
+    }
   }
 
   // Total acumulado de todas las líneas con precio conocido
   const total = lineas.reduce((s, l) => s + (l.subtotal ?? 0), 0)
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-5">
+    <form onSubmit={handleSubmit} onKeyDown={bloquearIntro} className="space-y-5">
 
       {/* Banner de modo edición — solo visible cuando isEditing es true */}
       {isEditing && (
@@ -415,8 +444,14 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, init
       </section>
 
       {/* El texto del botón cambia según el modo para que el usuario sepa qué va a pasar */}
-      <button type="submit" className="w-full py-3 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-semibold text-base transition-colors">
-        {isEditing ? 'Guardar cambios' : 'Ver presupuesto'}
+      {/* Deshabilitado mientras se guarda: evita el doble envío por doble toque */}
+      <button
+        type="submit"
+        disabled={guardando}
+        aria-busy={guardando}
+        className="w-full py-3 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-semibold text-base transition-colors disabled:opacity-60 disabled:cursor-wait"
+      >
+        {guardando ? 'Guardando...' : isEditing ? 'Guardar cambios' : 'Ver presupuesto'}
       </button>
     </form>
   )

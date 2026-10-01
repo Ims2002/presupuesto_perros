@@ -1,5 +1,24 @@
 import { useState } from 'react'
 import { saveTarifas, tarifasDefault } from '../data/tarifas'
+import { createLogger } from '../lib/logger'
+
+const log = createLogger('tarifas')
+
+/** Lista de precios que han cambiado ("2 Mascotas.diaFinSemana: 40 → 42"), para el log. */
+function diferencias(antes, despues) {
+  const out = []
+  despues.estancia.forEach((row, i) => {
+    Object.keys(row).forEach(k => {
+      if (k !== 'label' && antes.estancia[i]?.[k] !== row[k]) out.push(`${row.label}.${k}: ${antes.estancia[i]?.[k]} → ${row[k]}`)
+    })
+  })
+  despues.servicios.forEach((srv, i) => {
+    ['entresemana', 'finSemana'].forEach(k => {
+      if (antes.servicios[i]?.[k] !== srv[k]) out.push(`${srv.id}.${k}: ${antes.servicios[i]?.[k]} → ${srv[k]}`)
+    })
+  })
+  return out
+}
 
 export default function TarifasEditor({ tarifas, onUpdate, onClose }) {
   const [local, setLocal] = useState(JSON.parse(JSON.stringify(tarifas)))
@@ -19,7 +38,14 @@ export default function TarifasEditor({ tarifas, onUpdate, onClose }) {
   }
 
   function handleSave() {
-    saveTarifas(local)
+    try {
+      saveTarifas(local)
+    } catch (err) {
+      log.error('No se pudieron guardar las tarifas en este dispositivo', { error: err })
+      alert('No se pudieron guardar las tarifas en este dispositivo.')
+      return
+    }
+    log.info('Tarifas guardadas', { cambios: diferencias(tarifas, local) })
     onUpdate(local)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
@@ -27,6 +53,7 @@ export default function TarifasEditor({ tarifas, onUpdate, onClose }) {
 
   function handleReset() {
     if (confirm('¿Restablecer tarifas por defecto?')) {
+      log.info('Tarifas restablecidas a los valores por defecto (pendiente de guardar)')
       setLocal(JSON.parse(JSON.stringify(tarifasDefault)))
     }
   }

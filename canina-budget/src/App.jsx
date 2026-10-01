@@ -1,19 +1,35 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { getTarifas } from './data/tarifas'
 import PresupuestoForm from './components/PresupuestoForm'
 import PresupuestoPreview from './components/PresupuestoPreview'
 import TarifasEditor from './components/TarifasEditor'
 import Historial from './components/Historial'
-import { supabase } from './lib/supabase'
+import LogViewer from './components/LogViewer'
+import { createLogger, setLogContext } from './lib/logger'
+import {
+  obtenerMaxNumero,
+  crearPresupuesto,
+  actualizarPresupuesto,
+  camposDesdeFormulario,
+  nuevoIdBorrador,
+  mensajeError,
+  resumenParaLog,
+} from './lib/presupuestosRepo'
 import './index.css'
+
+const log = createLogger('app')
 
 /**
  * Lee el último número de presupuesto generado desde localStorage.
  * Se usa como estado inicial para no perder el contador al recargar.
- * Supabase puede sobreescribirlo en el useEffect si hay valores más altos en remoto.
+ * El máximo remoto puede sobreescribirlo si hay valores más altos.
  */
 function getUltimoNumero() {
-  return Number(localStorage.getItem('ultimo_presupuesto') ?? 0)
+  try {
+    return Number(localStorage.getItem('ultimo_presupuesto') ?? 0) || 0
+  } catch {
+    return 0
+  }
 }
 
 /**
@@ -22,26 +38,47 @@ function getUltimoNumero() {
  * Permite identificar desde qué dispositivo se creó cada presupuesto.
  */
 function getDispositivo() {
-  return localStorage.getItem('dispositivo_nombre') || ''
+  try {
+    return localStorage.getItem('dispositivo_nombre') || ''
+  } catch {
+    return ''
+  }
 }
 
 /**
  * Componente raíz de la aplicación. Gestiona:
  *   - La navegación entre las tres vistas: 'form' | 'preview' | 'historial'
  *   - El estado global del presupuesto activo y el modo de edición
- *   - La sincronización del contador de números con Supabase
+ *   - El guardado (crear / actualizar) a través de lib/presupuestosRepo
  *   - La identificación del dispositivo local
+ *   - El visor del registro de actividad (logs)
  */
 export default function App() {
   const [tarifas, setTarifas] = useState(getTarifas)       // tarifas editables (estancia + servicios)
   const [vista, setVista] = useState('form')                // vista activa: 'form' | 'preview' | 'historial'
   const [presupuesto, setPresupuesto] = useState(null)      // datos del presupuesto en preview
   const [showEditor, setShowEditor] = useState(false)       // controla si el editor de tarifas está abierto
-  const [ultimoNumero, setUltimoNumero] = useState(getUltimoNumero) // último número usado (para incrementar)
+  const [showLogs, setShowLogs] = useState(false)           // visor del registro de actividad
+  const [ultimoNumero, setUltimoNumero] = useState(getUltimoNumero) // último número usado (para mostrar el siguiente)
 
   // --- Modo edición ---
   const [editData, setEditData] = useState(null)   // datos pre-cargados en el formulario al editar
-  const [editId, setEditId] = useState(null)       // UUID del registro de Supabase que se está editando
+  const [editId, setEditId] = useState(null)       // id del registro que se está editando (null = nuevo)
+
+  // Id del borrador "nuevo" que hay en el formulario. Se envía como id del
+  // INSERT: si el mismo borrador llegara a enviarse dos veces, la base de datos
+  // rechaza el segundo por clave repetida y no se crea un duplicado.
+  // Se renueva al pulsar "+ Nuevo".
+  const [borradorId, setBorradorId] = useState(nuevoIdBorrador)
+
+  // --- Estado del guardado ---
+  // guardandoRef bloquea envíos simultáneos de forma síncrona (un doble toque
+  // llega antes de que React vuelva a pintar con guardando=true).
+  const guardandoRef = useRef(false)
+  const [guardando, setGuardando] = useState(false)
+  const [errorGuardado, setErrorGuardado] = useState(null)   // { mensaje, datos } si falló el guardado
+  const [avisoPreview, setAvisoPreview] = useState(null)     // { tipo: 'ok' | 'error', texto }
+  const [origenPreview, setOrigenPreview] = useState('form') // a dónde vuelve "Volver" desde el preview
 
   // Se usa como "key" de PresupuestoForm para forzar un montaje nuevo (formulario
   // en blanco) solo cuando el usuario pulsa "+ Nuevo". Si nos limitáramos a poner
@@ -55,109 +92,166 @@ export default function App() {
   const [showDispositivoModal, setShowDispositivoModal] = useState(!getDispositivo())
   const [dispositivoInput, setDispositivoInput] = useState('')
 
+  // Contexto que se adjunta a cada entrada del log
+  useEffect(() => { setLogContext({ dispositivo: dispositivo || '(sin nombre)' }) }, [dispositivo])
+  useEffect(() => {
+    setLogContext({ vista })
+    log.info('Navegación', { vista })
+    // Al cambiar de vista se sube al principio, para que se vea el aviso de
+    // "Guardado" / "Editando" (antes se conservaba el scroll del formulario).
+    try { window.scrollTo(0, 0) } catch { /* entorno sin scroll */ }
+  }, [vista])
+
+  // Atajo de teclado para abrir el registro: Ctrl+Shift+L
+  useEffect(() => {
+    function onKey(e) {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
+        e.preventDefault()
+        setShowLogs(v => !v)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  /** Guarda en localStorage y en estado el número más alto conocido. */
+  function registrarNumero(n) {
+    const max = Math.max(Number(n) || 0, getUltimoNumero())
+    try { localStorage.setItem('ultimo_presupuesto', String(max)) } catch { /* sin almacenamiento */ }
+    setUltimoNumero(max)
+  }
+
   /**
-   * Al montar la app, consulta el número más alto guardado en Supabase
-   * y lo compara con el de localStorage. Gana el mayor de los dos.
-   * Esto garantiza que dos dispositivos diferentes no repitan números
-   * aunque hayan estado desconectados entre sí.
+   * Al montar la app, consulta el número más alto guardado en remoto y lo
+   * compara con el de localStorage. Gana el mayor de los dos. Solo sirve para
+   * mostrar el número previsto: el número definitivo se calcula de nuevo en el
+   * momento de guardar (ver crearPresupuesto en lib/presupuestosRepo.js).
    */
   useEffect(() => {
+    let cancelado = false
     async function syncNumero() {
-      const { data } = await supabase
-        .from('presupuestos')
-        .select('numero')
-        .order('numero', { ascending: false })
-        .limit(1)
-      if (data && data.length > 0) {
-        const maxRemoto = Number(data[0].numero) || 0
+      try {
+        const maxRemoto = await obtenerMaxNumero()
+        if (cancelado) return
         const maxLocal = getUltimoNumero()
-        const max = Math.max(maxRemoto, maxLocal)
-        localStorage.setItem('ultimo_presupuesto', String(max))
-        setUltimoNumero(max)
+        log.info('Contador sincronizado', { maxRemoto, maxLocal })
+        registrarNumero(Math.max(maxRemoto, maxLocal))
+      } catch (err) {
+        log.warn('No se pudo sincronizar el contador con la base de datos; se usa el local', { error: err })
       }
     }
     syncNumero()
+    return () => { cancelado = true }
   }, [])
 
   /**
    * Recibe los datos del formulario al pulsar "Ver presupuesto" / "Guardar cambios".
    *
-   * - Si hay editId activo: actualiza el registro existente en Supabase (UPDATE).
-   * - Si no hay editId: crea un registro nuevo (INSERT) e incrementa el contador.
+   * - Si hay editId: actualiza ese registro (UPDATE).
+   * - Si no: crea uno nuevo (INSERT) con el id del borrador y, en cuanto se
+   *   confirma, el formulario pasa a MODO EDICIÓN de ese registro. Así, si el
+   *   usuario vuelve al formulario desde el preview y pulsa otra vez el botón,
+   *   se actualiza el mismo presupuesto en lugar de crear otro (era la causa
+   *   principal de los duplicados en el historial).
    *
-   * En ambos casos muestra la vista de preview. El estado de edición (editData/editId)
-   * se mantiene intacto a propósito: si el usuario pulsa "Volver al formulario" desde
-   * el preview, debe ver el formulario tal y como lo dejó (mismos datos, mismo modo
-   * edición/nuevo). Solo se limpia explícitamente al pulsar "+ Nuevo" (handleNuevo)
-   * o al editar otro presupuesto distinto desde el historial.
+   * Si el guardado falla, se queda en el formulario con un aviso y la opción
+   * de ver el presupuesto sin guardarlo (para poder sacar el PDF igualmente).
    */
   async function handleGenerar(datos) {
-    const disp = getDispositivo()
-    const totalCalc = datos.lineas.reduce((s, l) => s + (l.subtotal ?? 0), 0)
-
-    if (editId) {
-      // UPDATE: conserva el número original y el dispositivo que lo creó
-      await supabase
-        .from('presupuestos')
-        .update({
-          cliente: datos.cliente,
-          mascota: datos.mascota,
-          fecha_inicio: datos.fechaInicio || null,
-          fecha_fin: datos.fechaFin || null,
-          lineas: datos.lineas,
-          notas: datos.notas,
-          total: totalCalc,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', editId)
-    } else {
-      // INSERT: incrementa el contador y guarda el dispositivo de origen
-      const nuevo = ultimoNumero + 1
-      localStorage.setItem('ultimo_presupuesto', String(nuevo))
-      setUltimoNumero(nuevo)
-      await supabase.from('presupuestos').insert({
-        numero: datos.numero,
-        cliente: datos.cliente,
-        mascota: datos.mascota,
-        fecha_inicio: datos.fechaInicio || null,
-        fecha_fin: datos.fechaFin || null,
-        lineas: datos.lineas,
-        notas: datos.notas,
-        total: totalCalc,
-        dispositivo: disp,
-      })
+    if (guardandoRef.current) {
+      log.warn('Envío ignorado: ya hay un guardado en curso (doble toque)', { editId })
+      return
     }
+    guardandoRef.current = true
+    setGuardando(true)
+    setErrorGuardado(null)
 
-    setPresupuesto(datos)
+    const campos = camposDesdeFormulario(datos)
+    const modo = editId ? 'editar' : 'crear'
+    log.info(`Guardar presupuesto (${modo})`, {
+      editId,
+      borradorId: editId ? undefined : borradorId,
+      ...resumenParaLog({ ...campos, numero: datos.numero }),
+    })
+
+    try {
+      let guardado
+      if (editId) {
+        // UPDATE: conserva el número original y el dispositivo que lo creó
+        await actualizarPresupuesto(editId, campos)
+        guardado = datos
+        setAvisoPreview({ tipo: 'ok', texto: `Cambios guardados en el presupuesto #${datos.numero}` })
+      } else {
+        const { row, yaExistia } = await crearPresupuesto({
+          id: borradorId,
+          campos: { ...campos, dispositivo: getDispositivo() },
+          numeroMinimo: getUltimoNumero(),
+        })
+        // Si el borrador ya existía (reintento), se actualiza con los datos actuales
+        if (yaExistia) await actualizarPresupuesto(row.id, campos)
+        if (row.numero !== datos.numero) {
+          log.info('Número asignado distinto del previsto (otro dispositivo guardó antes)', { previsto: datos.numero, asignado: row.numero })
+        }
+        guardado = { ...datos, numero: row.numero }
+        registrarNumero(row.numero)
+        setEditId(row.id)
+        setEditData(guardado)
+        setAvisoPreview({ tipo: 'ok', texto: `Guardado en el historial como #${row.numero}` })
+        log.info('Formulario en modo edición del presupuesto recién creado', { id: row.id, numero: row.numero })
+      }
+      setPresupuesto(guardado)
+      setOrigenPreview('form')
+      setVista('preview')
+    } catch (err) {
+      log.error(`No se pudo guardar el presupuesto (${modo})`, { editId, borradorId, error: err })
+      setErrorGuardado({ mensaje: mensajeError(err), datos })
+    } finally {
+      guardandoRef.current = false
+      setGuardando(false)
+    }
+  }
+
+  /** Tras un fallo de guardado: muestra el presupuesto igualmente (sin guardar). */
+  function verSinGuardar() {
+    if (!errorGuardado) return
+    log.warn('Se muestra el presupuesto SIN guardarlo en el historial', { numero: errorGuardado.datos.numero })
+    setPresupuesto(errorGuardado.datos)
+    setAvisoPreview({ tipo: 'error', texto: 'Este presupuesto NO se ha guardado en el historial.' })
+    setOrigenPreview('form')
     setVista('preview')
   }
 
   /**
    * Llamado desde Historial cuando el usuario pulsa "Editar".
-   * Mapea el formato de Supabase (snake_case, columnas separadas)
+   * Mapea el formato de la base de datos (snake_case, columnas separadas)
    * al formato que espera PresupuestoForm (camelCase, objeto plano).
-   * Guarda el UUID del registro para que handleGenerar sepa que es un UPDATE.
+   * Guarda el id del registro para que handleGenerar sepa que es un UPDATE.
    */
   function handleEditarDesdeHistorial(p) {
+    log.info('Editar desde historial', { id: p.id, numero: p.numero })
     setEditData({
       cliente: p.cliente || { nombre: '' },
       mascota: p.mascota || '',
-      fechaInicio: p.fecha_inicio || '',   // Supabase devuelve snake_case
+      fechaInicio: p.fecha_inicio || '',
       fechaFin: p.fecha_fin || '',
       lineas: p.lineas || [],
       notas: p.notas || '',
       numero: p.numero,
     })
     setEditId(p.id)
+    setErrorGuardado(null)
     setVista('form')
   }
 
   /**
    * Llamado desde Historial cuando el usuario pulsa "Ver PDF".
    * Construye el objeto de presupuesto que espera PresupuestoPreview
-   * directamente desde el registro de Supabase, sin pasar por el formulario.
+   * directamente desde el registro, sin pasar por el formulario.
+   * "Volver" regresará al historial (no al formulario, que puede contener
+   * otro presupuesto distinto).
    */
   function handleVerDesdeHistorial(p) {
+    log.info('Ver PDF desde historial', { id: p.id, numero: p.numero })
     setPresupuesto({
       cliente: p.cliente || {},
       mascota: p.mascota || '',
@@ -167,7 +261,18 @@ export default function App() {
       notas: p.notas || '',
       numero: p.numero,
     })
+    setAvisoPreview(null)
+    setOrigenPreview('historial')
     setVista('preview')
+  }
+
+  /** Vacía el formulario y lo deja listo para un presupuesto nuevo. */
+  function reiniciarFormulario() {
+    setEditData(null)
+    setEditId(null)
+    setBorradorId(nuevoIdBorrador())
+    setErrorGuardado(null)
+    setFormKey(k => k + 1) // fuerza remontar el formulario en blanco, aunque ya estuviera en null
   }
 
   /**
@@ -175,10 +280,21 @@ export default function App() {
    * Se usa en el botón "+ Nuevo" de la cabecera.
    */
   function handleNuevo() {
-    setEditData(null)
-    setEditId(null)
-    setFormKey(k => k + 1) // fuerza remontar el formulario en blanco, aunque ya estuviera en null
+    log.info('Nuevo presupuesto', { editIdAnterior: editId })
+    reiniciarFormulario()
     setVista('form')
+  }
+
+  /**
+   * Llamado desde Historial tras borrar un presupuesto. Si era el que estaba
+   * abierto en el formulario, se reinicia el formulario para no intentar
+   * actualizar un registro que ya no existe.
+   */
+  function handleEliminado(p) {
+    if (p.id === editId) {
+      log.warn('Se ha eliminado el presupuesto abierto en el formulario; se reinicia el formulario', { id: p.id, numero: p.numero })
+      reiniciarFormulario()
+    }
   }
 
   /**
@@ -187,7 +303,8 @@ export default function App() {
    */
   function guardarDispositivo() {
     const nombre = dispositivoInput.trim() || 'Dispositivo'
-    localStorage.setItem('dispositivo_nombre', nombre)
+    try { localStorage.setItem('dispositivo_nombre', nombre) } catch { /* sin almacenamiento */ }
+    log.info('Dispositivo configurado', { nombre })
     setDispositivo(nombre)
     setShowDispositivoModal(false)
   }
@@ -286,22 +403,64 @@ export default function App() {
           ya que se crearía una instancia completamente nueva del componente.
         */}
         <div style={{ display: vista === 'form' ? 'block' : 'none' }}>
+          {/* Aviso de fallo de guardado: el presupuesto NO está en el historial */}
+          {errorGuardado && (
+            <div role="alert" style={{
+              marginBottom: 16, padding: '12px 16px', borderRadius: 12,
+              background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', fontSize: 13
+            }}>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>No se ha podido guardar el presupuesto</div>
+              <div style={{ marginBottom: 10 }}>{errorGuardado.mensaje}</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button type="button" onClick={verSinGuardar} style={{
+                  fontSize: 12, padding: '6px 12px', borderRadius: 8, cursor: 'pointer',
+                  border: '1px solid #fecaca', background: 'white', color: '#b91c1c'
+                }}>
+                  Ver presupuesto sin guardar
+                </button>
+                <button type="button" onClick={() => setShowLogs(true)} style={{
+                  fontSize: 12, padding: '6px 12px', borderRadius: 8, cursor: 'pointer',
+                  border: 'none', background: 'none', color: '#b91c1c', textDecoration: 'underline'
+                }}>
+                  Ver registro
+                </button>
+              </div>
+            </div>
+          )}
           <PresupuestoForm
             key={formKey}         // cambia solo al pulsar "+ Nuevo": fuerza formulario en blanco
             tarifas={tarifas}
             onGenerar={handleGenerar}
             ultimoNumero={ultimoNumero}
             initialData={editData}   // null = nuevo, objeto = edición
-            isEditing={!!editId}     // true cuando hay un UUID de edición activo
+            isEditing={!!editId}     // true cuando hay un id de edición activo
+            guardando={guardando}    // deshabilita el botón mientras se guarda
           />
         </div>
         {vista === 'preview' && presupuesto && (
-          <PresupuestoPreview presupuesto={presupuesto} onBack={() => setVista('form')} />
+          <>
+            {avisoPreview && (
+              <div className="no-print" role="status" style={{
+                marginBottom: 16, padding: '10px 14px', borderRadius: 10, fontSize: 13, fontWeight: 500,
+                ...(avisoPreview.tipo === 'ok'
+                  ? { background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#15803d' }
+                  : { background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c' })
+              }}>
+                {avisoPreview.tipo === 'ok' ? '✓ ' : '⚠ '}{avisoPreview.texto}
+              </div>
+            )}
+            <PresupuestoPreview
+              presupuesto={presupuesto}
+              onBack={() => setVista(origenPreview)}
+              backLabel={origenPreview === 'historial' ? 'Volver al historial' : 'Volver al formulario'}
+            />
+          </>
         )}
         {vista === 'historial' && (
           <Historial
             onEditar={handleEditarDesdeHistorial}
             onVer={handleVerDesdeHistorial}
+            onEliminado={handleEliminado}
           />
         )}
       </main>
@@ -310,6 +469,18 @@ export default function App() {
       {showEditor && (
         <TarifasEditor tarifas={tarifas} onUpdate={setTarifas} onClose={() => setShowEditor(false)} />
       )}
+
+      {/* Pie discreto con acceso al registro de actividad (también Ctrl+Shift+L) */}
+      <footer className="no-print" style={{ textAlign: 'center', padding: '8px 16px 24px' }}>
+        <button
+          onClick={() => setShowLogs(true)}
+          style={{ fontSize: 11, color: '#9ca3af', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}
+        >
+          Registro de actividad
+        </button>
+      </footer>
+
+      {showLogs && <LogViewer onClose={() => setShowLogs(false)} />}
     </div>
   )
 }

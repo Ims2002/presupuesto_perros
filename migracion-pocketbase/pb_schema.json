@@ -1,0 +1,44 @@
+[
+  {
+    "name": "presupuestos",
+    "type": "base",
+    "system": false,
+    "listRule": "",
+    "viewRule": "",
+    "createRule": "",
+    "updateRule": "",
+    "deleteRule": "",
+    "fields": [
+      {
+        "name": "id",
+        "type": "text",
+        "system": true,
+        "primaryKey": true,
+        "required": true,
+        "autogeneratePattern": "[a-z0-9]{15}",
+        "pattern": "^[a-z0-9]+$",
+        "min": 15,
+        "max": 15
+      },
+      { "name": "numero", "type": "text", "required": true, "pattern": "^[0-9]+$", "min": 0, "max": 20 },
+      { "name": "cliente", "type": "json", "required": false, "maxSize": 0 },
+      { "name": "mascota", "type": "text", "required": false, "min": 0, "max": 0 },
+      { "name": "fecha_inicio", "type": "text", "required": false, "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "min": 0, "max": 10 },
+      { "name": "fecha_fin", "type": "text", "required": false, "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "min": 0, "max": 10 },
+      { "name": "lineas", "type": "json", "required": false, "maxSize": 0 },
+      { "name": "notas", "type": "text", "required": false, "min": 0, "max": 0 },
+      { "name": "total", "type": "number", "required": false, "onlyInt": false },
+      { "name": "dispositivo", "type": "text", "required": false, "min": 0, "max": 0 },
+      { "name": "created_at", "type": "date", "required": false },
+      { "name": "updated_at", "type": "date", "required": false },
+      { "name": "supabase_id", "type": "text", "required": false, "min": 0, "max": 0 },
+      { "name": "created", "type": "autodate", "onCreate": true, "onUpdate": false },
+      { "name": "updated", "type": "autodate", "onCreate": true, "onUpdate": true }
+    ],
+    "indexes": [
+      "CREATE INDEX idx_presupuestos_numero ON presupuestos (numero)",
+      "CREATE INDEX idx_presupuestos_created_at ON presupuestos (created_at)",
+      "CREATE UNIQUE INDEX idx_presupuestos_supabase_id ON presupuestos (supabase_id) WHERE supabase_id != ''"
+    ]
+  }
+]

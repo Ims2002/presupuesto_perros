@@ -1,3 +1,7 @@
+import { createLogger } from '../lib/logger'
+
+const log = createLogger('tarifas')
+
 // Tarifas por defecto — se sobreescriben con lo guardado en localStorage
 export const tarifasDefault = {
   estancia: [
@@ -83,7 +87,8 @@ export function getTarifas() {
   try {
     const stored = localStorage.getItem('tarifas_canina')
     return stored ? JSON.parse(stored) : tarifasDefault
-  } catch {
+  } catch (err) {
+    log.warn('Tarifas guardadas ilegibles; se usan las de por defecto', { error: err })
     return tarifasDefault
   }
 }
