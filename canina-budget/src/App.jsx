@@ -4,6 +4,7 @@ import PresupuestoForm from './components/PresupuestoForm'
 import PresupuestoPreview from './components/PresupuestoPreview'
 import TarifasEditor from './components/TarifasEditor'
 import Historial from './components/Historial'
+import Extracto from './components/Extracto'
 import LogViewer from './components/LogViewer'
 import { createLogger, setLogContext } from './lib/logger'
 import {
@@ -47,7 +48,7 @@ function getDispositivo() {
 
 /**
  * Componente raíz de la aplicación. Gestiona:
- *   - La navegación entre las tres vistas: 'form' | 'preview' | 'historial'
+ *   - La navegación entre las vistas: 'form' | 'preview' | 'historial' | 'extracto'
  *   - El estado global del presupuesto activo y el modo de edición
  *   - El guardado (crear / actualizar) a través de lib/presupuestosRepo
  *   - La identificación del dispositivo local
@@ -55,7 +56,7 @@ function getDispositivo() {
  */
 export default function App() {
   const [tarifas, setTarifas] = useState(getTarifas)       // tarifas editables (estancia + servicios)
-  const [vista, setVista] = useState('form')                // vista activa: 'form' | 'preview' | 'historial'
+  const [vista, setVista] = useState('form')                // vista activa: 'form' | 'preview' | 'historial' | 'extracto'
   const [presupuesto, setPresupuesto] = useState(null)      // datos del presupuesto en preview
   const [showEditor, setShowEditor] = useState(false)       // controla si el editor de tarifas está abierto
   const [showLogs, setShowLogs] = useState(false)           // visor del registro de actividad
@@ -371,15 +372,15 @@ export default function App() {
       }}>
         <div style={{
           maxWidth: 720, margin: '0 auto', padding: '12px 16px',
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center'
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8
         }}>
           <div>
             <div style={{ fontWeight: 700, color: '#1f2937', fontSize: 16 }}>Pet Hotel</div>
             <div style={{ fontSize: 11, color: '#9ca3af' }}>Benitachell - Dog Daycare</div>
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             {/* "+ Nuevo" solo aparece cuando no estás ya en el formulario */}
-            {(vista === 'preview' || vista === 'historial') && (
+            {(vista === 'preview' || vista === 'historial' || vista === 'extracto') && (
               <button style={headerBtn} onClick={handleNuevo}>+ Nuevo</button>
             )}
             {/* Botón Historial actúa como toggle: abre y cierra la vista */}
@@ -388,6 +389,13 @@ export default function App() {
               onClick={() => setVista(v => v === 'historial' ? 'form' : 'historial')}
             >
               Historial
+            </button>
+            {/* Extracto de cobros para el gestor (también actúa como toggle) */}
+            <button
+              style={vista === 'extracto' ? headerBtnActive : headerBtn}
+              onClick={() => setVista(v => v === 'extracto' ? 'form' : 'extracto')}
+            >
+              Extracto
             </button>
             <button style={tarifasBtn} onClick={() => setShowEditor(true)}>Editar tarifas</button>
           </div>
@@ -463,6 +471,7 @@ export default function App() {
             onEliminado={handleEliminado}
           />
         )}
+        {vista === 'extracto' && <Extracto />}
       </main>
 
       {/* Modal del editor de tarifas — se monta solo cuando está abierto */}
