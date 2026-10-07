@@ -1,6 +1,6 @@
-import { useState, useRef } from 'react'
-import { METODOS, estadoCobro, fmtEuros, fmtFecha, hoyISO, r2, etiquetaMetodo } from '../lib/cobros'
-import { guardarPagos, nuevoPago } from '../lib/pagosRepo'
+import { useState, useRef, useEffect } from 'react'
+import { METODOS, estadoCobro, diagnosticarCobros, fmtEuros, fmtFecha, hoyISO, r2, etiquetaMetodo } from '../lib/cobros'
+import { guardarPagos, nuevoPago, resumenPagosLog } from '../lib/pagosRepo'
 import { mensajeError } from '../lib/presupuestosRepo'
 import { createLogger } from '../lib/logger'
 
@@ -11,6 +11,11 @@ const lbl = 'block text-xs text-gray-500 mb-1'
 
 /**
  * Ventana para registrar el cobro de un presupuesto.
+ *
+ * Registro de actividad (scope "cobros"): apertura y cierre, forma de pago y
+ * atajos elegidos, cada cobro registrado o quitado con el estado antes y
+ * después, y avisos de importes por encima de lo pendiente o fechas futuras.
+ * No se registran nombres ni el texto de las notas.
  *
  * Lo normal es un solo toque: elige Banco o Efectivo y "Marcar como pagado"
  * (fecha de hoy e importe pendiente ya rellenados). Si se cobra en varias
@@ -39,17 +44,60 @@ export default function CobroModal({ presupuesto, onClose, onGuardado }) {
   const importeValido = importeNum > 0 && !!fecha
   const exceso = importeValido && importeNum > est.pendiente + 0.005
   const esTotal = importeValido && Math.abs(importeNum - est.pendiente) < 0.005
+  const ref = { id: presupuesto.id, numero: presupuesto.numero } // identifica el presupuesto en cada entrada
 
-  async function guardar(lista) {
-    if (ocupado.current) return
+  // Al abrir: situación del presupuesto y aviso si tiene cobros no válidos
+  // (no cuentan y desaparecerían al guardar cualquier cambio).
+  useEffect(() => {
+    log.info('Ventana de cobro abierta', {
+      ...ref, estado: est.estado, total: est.total, cobrado: est.cobrado, pendiente: est.pendiente, cobros: est.pagos.length,
+    })
+    const problemas = diagnosticarCobros(presupuesto)
+    if (problemas.length) {
+      log.warn('El presupuesto tiene cobros con datos anómalos', { ...ref, problemas })
+    }
+    // Solo al montar: es la foto del presupuesto al abrir la ventana
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  function cerrar(como) {
+    if (guardando) return
+    log.debug('Ventana de cobro cerrada sin guardar', { ...ref, como })
+    onClose()
+  }
+
+  function elegirMetodo(key) {
+    if (key !== metodo) log.debug('Forma de pago elegida', { ...ref, metodo: key })
+    setMetodo(key)
+  }
+
+  function atajoImporte(atajo, valor) {
+    log.debug('Atajo de importe', { ...ref, atajo, importe: valor })
+    setImporte(String(valor))
+  }
+
+  /**
+   * Guarda la lista completa de cobros.
+   * @param {object[]} lista
+   * @param {string} accion  'registrar' | 'quitar_unico' | 'quitar_uno' | 'quitar_todos'
+   */
+  async function guardar(lista, accion) {
+    if (ocupado.current) {
+      log.warn('Acción ignorada: ya hay un guardado de cobros en curso (doble toque)', { ...ref, accion })
+      return
+    }
     ocupado.current = true
     setGuardando(true)
     setError(null)
     try {
       await guardarPagos(presupuesto.id, presupuesto.numero, lista)
+      const despues = estadoCobro({ ...presupuesto, pagos: lista })
+      log.info('Cobros actualizados', {
+        ...ref, accion, estadoAntes: est.estado, estadoDespues: despues.estado, pendiente: despues.pendiente, ...resumenPagosLog(lista),
+      })
       onGuardado(lista)
     } catch (err) {
-      log.error('No se pudo guardar el cobro', { id: presupuesto.id, numero: presupuesto.numero, error: err })
+      log.error('No se pudo guardar el cobro', { ...ref, accion, codigo: err?.code, error: err })
       setError(mensajeError(err))
     } finally {
       ocupado.current = false
@@ -58,38 +106,63 @@ export default function CobroModal({ presupuesto, onClose, onGuardado }) {
   }
 
   function registrar() {
-    if (!importeValido) return
+    if (!importeValido) {
+      log.warn('Cobro no válido: falta la fecha o el importe no es mayor que 0', { ...ref, importe: String(importe).slice(0, 20), conFecha: !!fecha })
+      return
+    }
+    const hoy = hoyISO()
+    const tipo = exceso ? 'exceso' : esTotal ? 'resto_completo' : 'parcial'
+    log.info('Registrar cobro', {
+      ...ref, importe: importeNum, metodo, fecha, esHoy: fecha === hoy, conNota: !!nota.trim(), tipo, pendienteAntes: est.pendiente,
+    })
+    if (exceso) log.warn('El cobro supera lo pendiente', { ...ref, importe: importeNum, pendiente: est.pendiente, exceso: r2(importeNum - est.pendiente) })
+    if (fecha > hoy) log.warn('Cobro con fecha futura', { ...ref, fecha, hoy })
     const pago = nuevoPago({ fecha, importe: importeNum, metodo, nota })
-    guardar([...est.pagos, pago])
+    guardar([...est.pagos, pago], 'registrar')
   }
+
+  /** Datos de un cobro para el registro (sin la nota). */
+  const datosCobro = x => ({ cobroId: x.id, fecha: x.fecha, importe: x.importe, metodo: x.metodo })
 
   function quitarPago(id) {
     // Con varios cobros se pregunta si quitar solo este o todos
     if (est.pagos.length > 1) {
-      setPreguntaQuitar(est.pagos.find(x => x.id === id) || null)
+      const cobro = est.pagos.find(x => x.id === id) || null
+      log.info('Pregunta: quitar este cobro o todos', { ...ref, cobros: est.pagos.length, cobrado: est.cobrado, ...(cobro ? datosCobro(cobro) : {}) })
+      setPreguntaQuitar(cobro)
       return
     }
-    if (quitar !== id) { setQuitar(id); return }
-    guardar(est.pagos.filter(x => x.id !== id))
+    if (quitar !== id) {
+      log.debug('Pedir confirmación para quitar el único cobro', { ...ref })
+      setQuitar(id)
+      return
+    }
+    log.info('Quitar el único cobro', { ...ref, ...datosCobro(est.pagos[0]) })
+    guardar(est.pagos.filter(x => x.id !== id), 'quitar_unico')
+  }
+
+  function cancelarPregunta() {
+    log.info('Quitar cobros cancelado', { ...ref })
+    setPreguntaQuitar(null)
   }
 
   function quitarSoloEste() {
     const id = preguntaQuitar.id
-    log.info('Quitar un cobro', { numero: presupuesto.numero, cobros: est.pagos.length })
+    log.info('Quitar solo este cobro', { ...ref, cobrosAntes: est.pagos.length, ...datosCobro(preguntaQuitar) })
     setPreguntaQuitar(null)
-    guardar(est.pagos.filter(x => x.id !== id))
+    guardar(est.pagos.filter(x => x.id !== id), 'quitar_uno')
   }
 
   function quitarTodos() {
-    log.info('Quitar todos los cobros', { numero: presupuesto.numero, cobros: est.pagos.length })
+    log.info('Quitar todos los cobros', { ...ref, ...resumenPagosLog(est.pagos) })
     setPreguntaQuitar(null)
-    guardar([])
+    guardar([], 'quitar_todos')
   }
 
   const titulo = est.pagos.length ? 'Cobros del presupuesto' : 'Marcar como pagado'
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={() => cerrar('fondo')}>
       <div
         role="dialog"
         aria-label={titulo}
@@ -105,7 +178,7 @@ export default function CobroModal({ presupuesto, onClose, onGuardado }) {
               {presupuesto.mascota ? ` — ${presupuesto.mascota}` : ''}
             </p>
           </div>
-          <button onClick={onClose} aria-label="Cerrar" className="text-gray-400 hover:text-gray-600 text-xl leading-none px-1">×</button>
+          <button onClick={() => cerrar('x')} aria-label="Cerrar" className="text-gray-400 hover:text-gray-600 text-xl leading-none px-1">×</button>
         </div>
 
         {/* Situación actual */}
@@ -155,7 +228,7 @@ export default function CobroModal({ presupuesto, onClose, onGuardado }) {
                   <button
                     key={m.key}
                     type="button"
-                    onClick={() => setMetodo(m.key)}
+                    onClick={() => elegirMetodo(m.key)}
                     aria-pressed={metodo === m.key}
                     className={`rounded-xl border px-3 py-2.5 text-left transition-colors ${metodo === m.key ? 'border-amber-400 bg-amber-50 ring-1 ring-amber-400' : 'border-gray-200 hover:bg-gray-50'}`}
                   >
@@ -177,11 +250,11 @@ export default function CobroModal({ presupuesto, onClose, onGuardado }) {
             </div>
             {est.pendiente > 0 && (
               <div className="flex gap-2 flex-wrap">
-                <button type="button" onClick={() => setImporte(String(est.pendiente))} className="text-xs px-2.5 py-1 rounded-full border border-gray-200 text-gray-600 hover:bg-gray-50">
+                <button type="button" onClick={() => atajoImporte('todo_pendiente', est.pendiente)} className="text-xs px-2.5 py-1 rounded-full border border-gray-200 text-gray-600 hover:bg-gray-50">
                   Todo lo pendiente
                 </button>
                 {est.cobrado === 0 && (
-                  <button type="button" onClick={() => { setImporte(String(r2(est.total / 2))); setNota(n => n || 'Señal 50 %') }} className="text-xs px-2.5 py-1 rounded-full border border-gray-200 text-gray-600 hover:bg-gray-50">
+                  <button type="button" onClick={() => { atajoImporte('senal_50', r2(est.total / 2)); setNota(n => n || 'Señal 50 %') }} className="text-xs px-2.5 py-1 rounded-full border border-gray-200 text-gray-600 hover:bg-gray-50">
                     Señal 50 %
                   </button>
                 )}
@@ -205,7 +278,7 @@ export default function CobroModal({ presupuesto, onClose, onGuardado }) {
 
         {/* Pregunta al quitar un cobro cuando hay varios */}
         {preguntaQuitar && (
-          <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4" onClick={() => setPreguntaQuitar(null)}>
+          <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4" onClick={cancelarPregunta}>
             <div role="alertdialog" aria-label="Quitar cobros" className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5" onClick={e => e.stopPropagation()}>
               <h4 className="text-base font-semibold text-gray-800 mb-2">¿Eliminar todos los cobros?</h4>
               <p className="text-sm text-gray-500 mb-4">
@@ -220,7 +293,7 @@ export default function CobroModal({ presupuesto, onClose, onGuardado }) {
                 <button onClick={quitarSoloEste} disabled={guardando} className="text-sm px-4 py-2 border border-red-200 text-red-600 hover:bg-red-50 rounded-lg disabled:opacity-50">
                   Solo este cobro ({fmtEuros(preguntaQuitar.importe)})
                 </button>
-                <button onClick={() => setPreguntaQuitar(null)} disabled={guardando} className="text-sm px-4 py-2 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg disabled:opacity-50">
+                <button onClick={cancelarPregunta} disabled={guardando} className="text-sm px-4 py-2 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-lg disabled:opacity-50">
                   Cancelar
                 </button>
               </div>
@@ -229,7 +302,7 @@ export default function CobroModal({ presupuesto, onClose, onGuardado }) {
         )}
 
         <div className="flex gap-2 justify-end mt-5">
-          <button onClick={onClose} disabled={guardando} className="text-sm px-4 py-2 border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50 disabled:opacity-50">
+          <button onClick={() => cerrar('boton')} disabled={guardando} className="text-sm px-4 py-2 border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50 disabled:opacity-50">
             {est.pendiente > 0 || est.pagos.length === 0 ? 'Cancelar' : 'Cerrar'}
           </button>
           {(est.pendiente > 0 || est.pagos.length === 0) && (

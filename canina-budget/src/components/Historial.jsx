@@ -3,6 +3,7 @@ import { listarPresupuestos, eliminarPresupuesto, mensajeError } from '../lib/pr
 import { createLogger } from '../lib/logger'
 import { estadoCobro, etiquetaMetodo, fmtEuros, fmtFecha as fmtFechaCobro } from '../lib/cobros'
 import CobroModal from './CobroModal'
+import { registrarResumenCobros } from '../lib/pagosRepo'
 
 const log = createLogger('historial')
 
@@ -47,7 +48,10 @@ export default function Historial({ onEditar, onVer, onEliminado }) {
       setError(null)
       try {
         const data = await listarPresupuestos()
-        if (!cancelado) setPresupuestos(data)
+        if (!cancelado) {
+          setPresupuestos(data)
+          registrarResumenCobros('historial', data) // pagados / parciales / pendientes y cobros anómalos
+        }
       } catch (err) {
         log.error('No se pudo cargar el historial', { error: err })
         if (!cancelado) setError(mensajeError(err))
@@ -121,7 +125,7 @@ export default function Historial({ onEditar, onVer, onEliminado }) {
   // (sin volver a pedir todo a la base de datos).
   function cobroGuardado(pagos) {
     const id = cobrando.id
-    log.info('Cobros actualizados', { id, numero: cobrando.numero, cobros: pagos.length })
+    log.debug('Lista del historial actualizada tras cambiar cobros', { id, numero: cobrando.numero, cobros: pagos.length })
     setPresupuestos(prev => prev.map(p => (p.id === id ? { ...p, pagos } : p)))
     setCobrando(null)
   }
@@ -140,6 +144,17 @@ export default function Historial({ onEditar, onVer, onEliminado }) {
     const { estado } = estadoCobro(p)
     return filtroCobro === 'pagados' ? estado === 'pagado' : estado !== 'pagado'
   })
+
+  function cambiarFiltroCobro(k) {
+    if (k === filtroCobro) return
+    log.info('Filtro de cobro', { filtro: k, resultados: conteo[k] })
+    setFiltroCobro(k)
+  }
+
+  function abrirCobro(p) {
+    log.debug('Abrir cobros desde el historial', { id: p.id, numero: p.numero })
+    setCobrando(p)
+  }
 
   const conteo = useMemo(() => {
     let pagados = 0
@@ -162,7 +177,7 @@ export default function Historial({ onEditar, onVer, onEliminado }) {
         {[['todos', 'Todos'], ['pendientes', 'Pendientes de cobro'], ['pagados', 'Pagados']].map(([k, t]) => (
           <button
             key={k}
-            onClick={() => setFiltroCobro(k)}
+            onClick={() => cambiarFiltroCobro(k)}
             aria-pressed={filtroCobro === k}
             className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${filtroCobro === k ? 'bg-gray-800 border-gray-800 text-white' : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'}`}
           >
@@ -263,7 +278,7 @@ export default function Historial({ onEditar, onVer, onEliminado }) {
                 <div className="flex gap-2 flex-wrap justify-end">
                   {/* Registrar / ver cobros */}
                   <button
-                    onClick={() => setCobrando(p)}
+                    onClick={() => abrirCobro(p)}
                     className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${cobro.estado === 'pagado' ? 'border border-green-200 text-green-700 hover:bg-green-50' : 'bg-green-600 hover:bg-green-700 text-white'}`}
                   >
                     {cobro.estado === 'pagado' ? 'Cobros' : cobro.estado === 'parcial' ? 'Cobrar resto' : 'Cobrar'}

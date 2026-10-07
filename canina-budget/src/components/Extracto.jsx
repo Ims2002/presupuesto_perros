@@ -1,12 +1,22 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { listarPresupuestos, mensajeError } from '../lib/presupuestosRepo'
 import { calcularRango } from '../lib/periodos'
 import { construirExtracto, tablaCobros, tablaPresupuestos, tablaMeses, totalesDeTabla } from '../lib/extracto'
 import { excel, pdf, descargar } from '../lib/export/exportadores'
 import { estadoCobro, fmtEuros, fmtFecha, hoyISO } from '../lib/cobros'
+import { registrarResumenCobros } from '../lib/pagosRepo'
 import { createLogger } from '../lib/logger'
 
+/*
+ * Registro de actividad (scope "extracto"): apertura, cambios de periodo y
+ * filtros, resumen del extracto calculado (agrupado para no llenar el registro
+ * mientras se escribe), avisos de fechas invertidas o IVA no válido y cada
+ * exportación con su tamaño, filas y páginas. Sin nombres ni notas.
+ */
 const log = createLogger('extracto')
+
+// Espera tras el último cambio antes de registrar el resumen del extracto
+const ESPERA_RESUMEN_MS = 800
 
 const inp = 'border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-400 bg-white'
 const lbl = 'block text-xs text-gray-500 mb-1'
@@ -39,7 +49,8 @@ function leerPrefs() {
     // Un periodo guardado que ya no existe (p. ej. "Trimestre pasado") vuelve al de por defecto
     if (!PRESETS.some(x => x.id === p.preset)) p.preset = PREFS_DEFECTO.preset
     return p
-  } catch {
+  } catch (err) {
+    log.warn('Preferencias del extracto ilegibles; se usan las de por defecto', { error: err })
     return PREFS_DEFECTO
   }
 }
@@ -113,10 +124,25 @@ export default function Extracto() {
   const [exportando, setExportando] = useState(null)
   const [errorExport, setErrorExport] = useState(null)
 
-  const set = cambios => setPrefs(p => ({ ...p, ...cambios }))
+  const set = cambios => {
+    log.debug('Opción del extracto cambiada', cambios)
+    setPrefs(p => ({ ...p, ...cambios }))
+  }
 
   useEffect(() => {
-    try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)) } catch { /* sin almacenamiento */ }
+    log.info('Vista de extracto abierta', {
+      modo: prefs.modo, preset: prefs.preset, metodo: prefs.metodo, iva: prefs.ivaActivo ? `${prefs.ivaPct} %` : 'sin desglose',
+    })
+    // Solo al abrir la vista
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify(prefs))
+    } catch (err) {
+      log.debug('No se pudieron guardar las preferencias del extracto (almacenamiento no disponible)', { error: err })
+    }
   }, [prefs])
 
   useEffect(() => {
@@ -126,7 +152,10 @@ export default function Extracto() {
       setError(null)
       try {
         const data = await listarPresupuestos()
-        if (!cancelado) setPresupuestos(data)
+        if (!cancelado) {
+          setPresupuestos(data)
+          registrarResumenCobros('extracto', data)
+        }
       } catch (err) {
         log.error('No se pudieron cargar los presupuestos para el extracto', { error: err })
         if (!cancelado) setError(mensajeError(err))
@@ -153,21 +182,64 @@ export default function Extracto() {
     iva: { activo: prefs.ivaActivo, porcentaje: Number(prefs.ivaPct) || 0 },
   }), [presupuestos, rango, prefs.metodo, prefs.ivaActivo, prefs.ivaPct])
 
+  // Resumen del extracto en el registro: se espera a que el usuario deje de
+  // cambiar opciones (p. ej. mientras escribe "Últimos N") para dejar una
+  // sola entrada por combinación, con los avisos que correspondan.
+  const ultimoResumen = useRef('')
+  useEffect(() => {
+    if (loading || error) return
+    const timer = setTimeout(() => {
+      const pct = Number(prefs.ivaPct)
+      const clave = JSON.stringify([rango.desde, rango.hasta, prefs.metodo, prefs.ivaActivo, prefs.ivaPct, ext.totales.n, ext.totales.total])
+      if (clave === ultimoResumen.current) return
+      ultimoResumen.current = clave
+      if (prefs.modo === 'rango' && prefs.desde && prefs.hasta && prefs.desde > prefs.hasta) {
+        log.warn('Fechas exactas invertidas: se usan en orden', { desde: prefs.desde, hasta: prefs.hasta })
+      }
+      if (prefs.ivaActivo && (!Number.isFinite(pct) || pct <= 0 || pct > 100)) {
+        log.warn('Tipo de IVA no válido: el desglose sale con IVA 0', { valor: String(prefs.ivaPct).slice(0, 10) })
+      }
+      log.info('Extracto calculado', {
+        periodo: rango.etiqueta,
+        desde: rango.desde,
+        hasta: rango.hasta,
+        metodo: prefs.metodo,
+        iva: prefs.ivaActivo ? Number(prefs.ivaPct) || 0 : null,
+        ...ext.totales,
+      })
+    }, ESPERA_RESUMEN_MS)
+    return () => clearTimeout(timer)
+  }, [loading, error, rango, ext, prefs.modo, prefs.desde, prefs.hasta, prefs.metodo, prefs.ivaActivo, prefs.ivaPct])
+
+  function cambiarVistaPrevia(k) {
+    if (k !== vistaPrevia) log.debug('Vista previa del extracto', { vista: k })
+    setVistaPrevia(k)
+  }
+
   // Presupuestos sin ningún cobro registrado: aviso para no olvidar marcarlos
   const sinCobro = useMemo(() => presupuestos.filter(p => estadoCobro(p).pagos.length === 0).length, [presupuestos])
 
   async function exportar(id) {
-    if (exportando) return
+    if (exportando) {
+      log.warn('Exportación ignorada: ya hay otra en curso', { formato: id, enCurso: exportando })
+      return
+    }
     setExportando(id)
     setErrorExport(null)
-    const t = log.time('Exportar extracto', { formato: id, desde: rango.desde, hasta: rango.hasta, cobros: ext.totales.n })
+    const datos = {
+      formato: id, desde: rango.desde, hasta: rango.hasta, metodo: prefs.metodo,
+      iva: ext.iva.activo ? ext.iva.porcentaje : null, cobros: ext.totales.n, total: ext.totales.total,
+    }
+    if (ext.totales.n === 0) log.warn('Se exporta un extracto sin cobros', datos)
+    const t = log.time('Exportar extracto', datos)
     try {
       let archivo
       if (id === 'xlsx') archivo = excel(ext, rango)
       else if (id === 'pdf-cobros') archivo = await pdf(ext, rango, 'cobros')
       else archivo = await pdf(ext, rango, 'presupuestos')
       descargar(archivo)
-      t.end({ archivo: archivo.nombre })
+      const bytes = archivo.datos.byteLength ?? archivo.datos.length
+      t.end({ archivo: archivo.nombre, kb: Math.round(bytes / 102.4) / 10, ...archivo.meta })
     } catch (err) {
       t.fail(err)
       setErrorExport(mensajeError(err))
@@ -262,7 +334,7 @@ export default function Extracto() {
       {error && (
         <div className="text-center py-12 text-red-400 text-sm">
           <div>Error: {error}</div>
-          <button onClick={() => setRecarga(r => r + 1)} className="mt-3 text-xs px-3 py-1.5 border border-red-200 rounded-lg text-red-500 hover:bg-red-50">Reintentar</button>
+          <button onClick={() => { log.info('Reintentar carga del extracto'); setRecarga(r => r + 1) }} className="mt-3 text-xs px-3 py-1.5 border border-red-200 rounded-lg text-red-500 hover:bg-red-50">Reintentar</button>
         </div>
       )}
 
@@ -323,7 +395,7 @@ export default function Extracto() {
               <div className="text-sm font-semibold text-gray-700">Vista previa</div>
               <div className="flex gap-2">
                 {[['cobros', 'Por cobro'], ['presupuestos', 'Por presupuesto'], ['meses', 'Por mes']].map(([k, t]) => (
-                  <button key={k} className={chip(vistaPrevia === k)} onClick={() => setVistaPrevia(k)}>{t}</button>
+                  <button key={k} className={chip(vistaPrevia === k)} onClick={() => cambiarVistaPrevia(k)}>{t}</button>
                 ))}
               </div>
             </div>

@@ -35,6 +35,27 @@ El IVA no se guarda en la base de datos: se calcula al generar el extracto.
 `muestras/` tiene los 3 formatos (con IVA 21 %) generados con **datos inventados**
 (3.er trimestre 2026) para enseñárselos al gestor sin tocar datos reales.
 
+## Registro de actividad
+
+Cobros y extracto usan el mismo sistema de logs que el resto de la app (`src/lib/logger.js`).
+Para verlo: *Registro de actividad* en el pie o Ctrl+Shift+L. En el visor hay un selector de
+**módulo** para ver solo lo de cada parte:
+
+| Módulo | Qué registra |
+|---|---|
+| `cobros` | Ventana de cobro abierta/cerrada, forma de pago y atajos (debug), cada cobro registrado (importe, forma, fecha, tipo: parcial / resto / exceso), quitar uno o todos (incluida la pregunta y su cancelación) y el estado antes → después. Avisos: importe mayor que lo pendiente, fecha futura, doble toque. |
+| `pagos` | Guardado de cobros con duración (`Guardar cobros — OK/ERROR`). Si falta la columna, error `FALTA_COLUMNA_PAGOS` con la solución. Al cargar Historial o Extracto: cuántos presupuestos hay pagados, parciales y pendientes, y aviso si hay **cobros con datos anómalos**. |
+| `extracto` | Vista abierta, resumen de cada extracto calculado (periodo, forma de pago, IVA, totales; una entrada aunque cambies varias opciones seguidas), avisos de fechas invertidas, IVA no válido o exportación vacía, y cada exportación con tamaño, hojas/filas o páginas y duración. |
+| `historial` | Filtro Todos / Pendientes / Pagados con nº de resultados. |
+
+Anomalías que se detectan (`diagnosticarCobros` en `src/lib/cobros.js`): columna ilegible, cobros sin
+fecha o con importe 0 (no cuentan), forma de pago desconocida (se cuenta como banco), cobrado mayor
+que el total, fechas futuras e ids repetidos.
+
+En producción se guarda desde **info**; para ver también lo de nivel debug, abre la app con `?debug=1`
+o cambia "Guardar desde" en el visor. Como en el resto de la app, **no se registran nombres de
+clientes ni el texto de las notas**: solo ids, números de presupuesto, importes, fechas y formas de pago.
+
 ## Datos: columna `pagos`
 
 Tipo `jsonb`, nunca nula, valor por defecto `[]` (lista vacía = sin cobros). Una entrada por cobro:

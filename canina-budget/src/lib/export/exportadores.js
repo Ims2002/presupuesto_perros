@@ -7,7 +7,8 @@ import { fmtFecha, fmtEuros } from '../cobros'
 /**
  * Exportadores del extracto de cobros. Todos reciben el extracto ya calculado
  * (construirExtracto) y el rango (calcularRango) y devuelven
- * { nombre, mime, datos } listo para descargar.
+ * { nombre, mime, datos, meta } listo para descargar. "meta" son datos para el
+ * registro de actividad (hojas, filas, páginas), sin datos personales.
  *
  *   excel(ext, rango)                 → .xlsx con hojas Resumen, Cobros y Por presupuesto
  *   pdf(ext, rango, detalle)          → .pdf imprimible con resumen + detalle
@@ -120,6 +121,7 @@ export function excel(ext, rango) {
     nombre: nombreArchivo(rango, 'xlsx'),
     mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     datos,
+    meta: { hojas: 3, filas: { cobros: ext.cobros.length, presupuestos: ext.porPresupuesto.length, meses: ext.porMes.length } },
   }
 }
 
@@ -272,6 +274,7 @@ export async function pdf(ext, rango, detalle = 'cobros') {
     nombre: nombreArchivo(rango, 'pdf', detalle === 'presupuestos' ? '_por-presupuesto' : ''),
     mime: 'application/pdf',
     datos: doc.output('arraybuffer'),
+    meta: { paginas, detalle, filas: tabla.filas.length },
   }
 }
 
