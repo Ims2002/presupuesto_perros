@@ -1,6 +1,9 @@
 import { useState, useEffect, useMemo } from 'react'
 import { listarPresupuestos, eliminarPresupuesto, mensajeError } from '../lib/presupuestosRepo'
 import { createLogger } from '../lib/logger'
+import { estadoCobro, etiquetaMetodo, fmtEuros, fmtFecha as fmtFechaCobro } from '../lib/cobros'
+import CobroModal from './CobroModal'
+import { registrarResumenCobros } from '../lib/pagosRepo'
 
 const log = createLogger('historial')
 
@@ -23,6 +26,8 @@ export default function Historial({ onEditar, onVer, onEliminado }) {
   const [loading, setLoading] = useState(true)         // estado de carga inicial
   const [error, setError] = useState(null)             // mensaje de error si falla la consulta
   const [busqueda, setBusqueda] = useState('')         // texto del buscador
+  const [filtroCobro, setFiltroCobro] = useState('todos') // 'todos' | 'pendientes' | 'pagados'
+  const [cobrando, setCobrando] = useState(null)         // presupuesto con la ventana de cobro abierta
 
   // --- Eliminación con doble confirmación ---
   const [pendingDelete, setPendingDelete] = useState(null) // presupuesto seleccionado para borrar (o null)
@@ -43,7 +48,10 @@ export default function Historial({ onEditar, onVer, onEliminado }) {
       setError(null)
       try {
         const data = await listarPresupuestos()
-        if (!cancelado) setPresupuestos(data)
+        if (!cancelado) {
+          setPresupuestos(data)
+          registrarResumenCobros('historial', data) // pagados / parciales / pendientes y cobros anómalos
+        }
       } catch (err) {
         log.error('No se pudo cargar el historial', { error: err })
         if (!cancelado) setError(mensajeError(err))
@@ -113,16 +121,46 @@ export default function Historial({ onEditar, onVer, onEliminado }) {
     onEliminado?.(borrado)
   }
 
-  // Filtra en memoria los presupuestos según el texto del buscador.
-  // Compara contra nombre del cliente, mascota y número de presupuesto.
+  // Tras registrar o quitar un cobro, actualiza ese presupuesto en la lista
+  // (sin volver a pedir todo a la base de datos).
+  function cobroGuardado(pagos) {
+    const id = cobrando.id
+    log.debug('Lista del historial actualizada tras cambiar cobros', { id, numero: cobrando.numero, cobros: pagos.length })
+    setPresupuestos(prev => prev.map(p => (p.id === id ? { ...p, pagos } : p)))
+    setCobrando(null)
+  }
+
+  // Filtra en memoria los presupuestos según el texto del buscador y el
+  // estado de cobro. Compara contra nombre del cliente, mascota y número.
   const filtrados = presupuestos.filter(p => {
     const s = busqueda.toLowerCase()
-    return (
+    const coincide = (
       (p.cliente?.nombre || '').toLowerCase().includes(s) ||
       (p.mascota || '').toLowerCase().includes(s) ||
       String(p.numero ?? '').includes(s)
     )
+    if (!coincide) return false
+    if (filtroCobro === 'todos') return true
+    const { estado } = estadoCobro(p)
+    return filtroCobro === 'pagados' ? estado === 'pagado' : estado !== 'pagado'
   })
+
+  function cambiarFiltroCobro(k) {
+    if (k === filtroCobro) return
+    log.info('Filtro de cobro', { filtro: k, resultados: conteo[k] })
+    setFiltroCobro(k)
+  }
+
+  function abrirCobro(p) {
+    log.debug('Abrir cobros desde el historial', { id: p.id, numero: p.numero })
+    setCobrando(p)
+  }
+
+  const conteo = useMemo(() => {
+    let pagados = 0
+    presupuestos.forEach(p => { if (estadoCobro(p).estado === 'pagado') pagados++ })
+    return { todos: presupuestos.length, pagados, pendientes: presupuestos.length - pagados }
+  }, [presupuestos])
 
   return (
     <div className="space-y-4">
@@ -133,6 +171,20 @@ export default function Historial({ onEditar, onVer, onEliminado }) {
         value={busqueda}
         onChange={e => setBusqueda(e.target.value)}
       />
+
+      {/* Filtro por estado de cobro */}
+      <div className="flex gap-2 flex-wrap" role="group" aria-label="Filtrar por cobro">
+        {[['todos', 'Todos'], ['pendientes', 'Pendientes de cobro'], ['pagados', 'Pagados']].map(([k, t]) => (
+          <button
+            key={k}
+            onClick={() => cambiarFiltroCobro(k)}
+            aria-pressed={filtroCobro === k}
+            className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${filtroCobro === k ? 'bg-gray-800 border-gray-800 text-white' : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'}`}
+          >
+            {t}{!loading && !error ? ` (${conteo[k]})` : ''}
+          </button>
+        ))}
+      </div>
 
       {/* Estados de carga y error */}
       {loading && <div className="text-center py-16 text-gray-400 text-sm">Cargando...</div>}
@@ -159,7 +211,7 @@ export default function Historial({ onEditar, onVer, onEliminado }) {
       {/* Lista vacía: mensaje diferente si hay búsqueda activa o si no hay datos aún */}
       {!loading && !error && filtrados.length === 0 && (
         <div className="text-center py-16 text-gray-400 text-sm">
-          {busqueda ? 'Sin resultados' : 'Aún no hay presupuestos guardados'}
+          {busqueda || filtroCobro !== 'todos' ? 'Sin resultados' : 'Aún no hay presupuestos guardados'}
         </div>
       )}
 
@@ -168,6 +220,7 @@ export default function Historial({ onEditar, onVer, onEliminado }) {
         // Usa el total guardado; si no existe (registros antiguos),
         // lo recalcula sumando los subtotales de las líneas
         const total = p.total ?? p.lineas?.reduce((s, l) => s + (l.subtotal ?? 0), 0) ?? 0
+        const cobro = estadoCobro(p)
 
         // Formatea la fecha de creación en español (DD/MM/YYYY)
         // Incluye la hora: ayuda a distinguir presupuestos parecidos o repetidos
@@ -177,7 +230,8 @@ export default function Historial({ onEditar, onVer, onEliminado }) {
 
         return (
           <div key={p.id} className="bg-white rounded-2xl p-4 shadow-sm">
-            <div className="flex items-start justify-between gap-3">
+            {/* En el móvil los botones van debajo; en pantallas anchas, a la derecha */}
+            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
 
               {/* Columna izquierda: número, nombre, mascota, fechas, dispositivo */}
               <div className="flex-1 min-w-0">
@@ -191,6 +245,22 @@ export default function Historial({ onEditar, onVer, onEliminado }) {
                   </span>
                   {p.mascota && <span className="text-xs text-gray-500">— {p.mascota}</span>}
                 </div>
+                {/* Estado de cobro */}
+                <div className="mb-1.5">
+                  {cobro.estado === 'pagado' && (
+                    <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-green-50 text-green-700 font-medium">
+                      ✓ Pagado · {cobro.metodos.map(etiquetaMetodo).join(' + ')} · {fmtFechaCobro(cobro.ultimaFecha)}
+                    </span>
+                  )}
+                  {cobro.estado === 'parcial' && (
+                    <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 font-medium">
+                      Cobrado {fmtEuros(cobro.cobrado)} · faltan {fmtEuros(cobro.pendiente)}
+                    </span>
+                  )}
+                  {cobro.estado === 'pendiente' && (
+                    <span className="inline-flex text-[11px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">Pendiente de cobro</span>
+                  )}
+                </div>
                 <div className="text-xs text-gray-400 flex flex-wrap gap-x-4 gap-y-1">
                   {p.fecha_inicio && <span>Entrada: {fmt(p.fecha_inicio)}</span>}
                   {p.fecha_fin && <span>Salida: {fmt(p.fecha_fin)}</span>}
@@ -203,9 +273,16 @@ export default function Historial({ onEditar, onVer, onEliminado }) {
               </div>
 
               {/* Columna derecha: total y botones de acción */}
-              <div className="text-right shrink-0">
-                <div className="font-bold text-gray-800 text-sm mb-2.5">{total.toFixed(0)} EUR</div>
-                <div className="flex gap-2">
+              <div className="shrink-0 flex items-center justify-between gap-3 sm:block sm:text-right">
+                <div className="font-bold text-gray-800 text-sm whitespace-nowrap sm:mb-2.5">{total.toFixed(0)} EUR</div>
+                <div className="flex gap-2 flex-wrap justify-end">
+                  {/* Registrar / ver cobros */}
+                  <button
+                    onClick={() => abrirCobro(p)}
+                    className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${cobro.estado === 'pagado' ? 'border border-green-200 text-green-700 hover:bg-green-50' : 'bg-green-600 hover:bg-green-700 text-white'}`}
+                  >
+                    {cobro.estado === 'pagado' ? 'Cobros' : cobro.estado === 'parcial' ? 'Cobrar resto' : 'Cobrar'}
+                  </button>
                   {/* Llama a onEditar con el registro completo;
                       App.jsx lo mapea al formato del formulario */}
                   <button
@@ -235,6 +312,10 @@ export default function Historial({ onEditar, onVer, onEliminado }) {
           </div>
         )
       })}
+
+      {cobrando && (
+        <CobroModal presupuesto={cobrando} onClose={() => setCobrando(null)} onGuardado={cobroGuardado} />
+      )}
 
       {/* Popup de doble confirmación antes de eliminar un presupuesto del historial */}
       {pendingDelete && (

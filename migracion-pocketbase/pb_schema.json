@@ -29,6 +29,7 @@
       { "name": "notas", "type": "text", "required": false, "min": 0, "max": 0 },
       { "name": "total", "type": "number", "required": false, "onlyInt": false },
       { "name": "dispositivo", "type": "text", "required": false, "min": 0, "max": 0 },
+      { "name": "pagos", "type": "json", "required": false, "maxSize": 0 },
       { "name": "created_at", "type": "date", "required": false },
       { "name": "updated_at", "type": "date", "required": false },
       { "name": "supabase_id", "type": "text", "required": false, "min": 0, "max": 0 },

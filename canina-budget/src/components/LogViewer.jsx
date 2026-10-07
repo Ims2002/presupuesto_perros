@@ -21,7 +21,7 @@ function hora(ts) {
 
 /**
  * Visor del registro de actividad (logs guardados en este dispositivo).
- * Permite filtrar por nivel, texto y sesión, ver el detalle de cada entrada,
+ * Permite filtrar por nivel, módulo (cobros, pagos, extracto, db...), texto y sesión, ver el detalle de cada entrada,
  * copiar/descargar el registro para enviarlo y cambiar el nivel de detalle.
  * Se abre desde el pie de página o con Ctrl+Shift+L.
  */
@@ -29,6 +29,7 @@ export default function LogViewer({ onClose }) {
   const [entries, setEntries] = useState(getLogs)
   const [nivelMin, setNivelMin] = useState('info')     // filtro de visualización
   const [texto, setTexto] = useState('')
+  const [modulo, setModulo] = useState('')               // '' = todos; si no, scope ("cobros", "extracto"...)
   const [soloSesion, setSoloSesion] = useState(false)
   const [nivelRegistro, setNivelRegistro] = useState(getLogLevel) // qué se guarda
   const [copiado, setCopiado] = useState(false)
@@ -43,10 +44,14 @@ export default function LogViewer({ onClose }) {
     return entries
       .filter(e => LEVELS[e.level] >= LEVELS[nivelMin])
       .filter(e => !soloSesion || e.session === SESSION_ID)
+      .filter(e => !modulo || e.scope === modulo || e.scope.startsWith(`${modulo}:`))
       .filter(e => !s || `${e.scope} ${e.msg} ${JSON.stringify(e.data ?? '')}`.toLowerCase().includes(s))
       .slice()
       .reverse() // más recientes primero
-  }, [entries, nivelMin, texto, soloSesion])
+  }, [entries, nivelMin, texto, soloSesion, modulo])
+
+  // Módulos presentes en el registro (scope sin el sufijo ":sub")
+  const modulos = useMemo(() => [...new Set(entries.map(e => String(e.scope).split(':')[0]))].sort(), [entries])
 
   const errores = entries.filter(e => e.level === 'error').length
   const avisos = entries.filter(e => e.level === 'warn').length
@@ -96,6 +101,10 @@ export default function LogViewer({ onClose }) {
             <option value="info">Info y superior</option>
             <option value="warn">Avisos y errores</option>
             <option value="error">Solo errores</option>
+          </select>
+          <select className={sel} value={modulo} onChange={e => setModulo(e.target.value)} title="Mostrar solo un módulo" aria-label="Módulo">
+            <option value="">Todos los módulos</option>
+            {modulos.map(m => <option key={m} value={m}>{m}</option>)}
           </select>
           <input className={`${sel} flex-1 min-w-[120px]`} placeholder="Buscar..." value={texto} onChange={e => setTexto(e.target.value)} />
           <label className="text-xs text-gray-500 flex items-center gap-1">
