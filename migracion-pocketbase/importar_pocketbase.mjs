@@ -78,6 +78,7 @@ function mapear(r) {
     notas: r.notas ?? '',
     total,
     dispositivo: r.dispositivo ?? '',
+    pagos: Array.isArray(r.pagos) ? r.pagos : [],
     created_at: toIso(r.created_at),
     updated_at: toIso(r.updated_at),
   }
