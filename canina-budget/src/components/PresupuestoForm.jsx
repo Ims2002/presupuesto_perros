@@ -80,7 +80,7 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, init
   const [lineas, setLineas] = useState([]) // array de líneas añadidas al presupuesto
 
   // --- Estado del bloque "Estancia" ---
-  const [numMascotas, setNumMascotas] = useState(0)       // índice en tarifas.estancia (0=1 mascota, 1=2, 2=3)
+  const [numMascotas, setNumMascotas] = useState(0)       // índice en tarifas.estancia (0=1 mascota, 1=2, 2=3, 3=4)
   const [tipoEstancia, setTipoEstancia] = useState('')
   const [subfechaEstancia, setSubfechaEstancia] = useState('') // texto opcional de días concretos
 
@@ -322,11 +322,11 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, init
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
           <div>
             <label className={lbl}>Mascotas</label>
-            {/* El valor es el índice (0,1,2) en el array tarifas.estancia */}
+            {/* El valor es el índice en el array tarifas.estancia (una opción por fila de tarifas) */}
             <select className={inp} value={numMascotas} onChange={e => setNumMascotas(Number(e.target.value))}>
-              <option value={0}>1 mascota</option>
-              <option value={1}>2 mascotas</option>
-              <option value={2}>3 mascotas</option>
+              {tarifas.estancia.map((row, i) => (
+                <option key={i} value={i}>{i + 1} {i === 0 ? 'mascota' : 'mascotas'}</option>
+              ))}
             </select>
           </div>
           <div>

@@ -2,8 +2,14 @@ import { createLogger } from '../lib/logger'
 
 const log = createLogger('tarifas')
 
+// Versión de las tarifas por defecto. Al subirla, getTarifas() reemplaza la tabla de
+// estancia guardada en localStorage por la de aquí (los servicios guardados se conservan).
+// v2 (oct 2026): nuevos precios de Día+Noche y Tarde+Noche, y fila de 4 mascotas.
+export const TARIFAS_VERSION = 2
+
 // Tarifas por defecto — se sobreescriben con lo guardado en localStorage
 export const tarifasDefault = {
+  version: TARIFAS_VERSION,
   estancia: [
     {
       label: '1 Mascota',
@@ -16,18 +22,26 @@ export const tarifasDefault = {
     {
       label: '2 Mascotas',
       diaEntresemana: 35,
-      diaNocheEntresemana: 40,
+      diaNocheEntresemana: 45,
       diaFinSemana: 40,
-      diaNocheFinSemana: 45,
+      diaNocheFinSemana: 50,
       tardeNoche: 35,
     },
     {
       label: '3 Mascotas',
       diaEntresemana: 45,
-      diaNocheEntresemana: 50,
+      diaNocheEntresemana: 55,
       diaFinSemana: 50,
-      diaNocheFinSemana: 55,
-      tardeNoche: 40,
+      diaNocheFinSemana: 60,
+      tardeNoche: 45,
+    },
+    {
+      label: '4 Mascotas',
+      diaEntresemana: 55,
+      diaNocheEntresemana: 65,
+      diaFinSemana: 60,
+      diaNocheFinSemana: 70,
+      tardeNoche: 55,
     },
   ],
   servicios: [
@@ -84,13 +98,33 @@ export const tarifasDefault = {
 }
 
 export function getTarifas() {
+  let stored
   try {
-    const stored = localStorage.getItem('tarifas_canina')
-    return stored ? JSON.parse(stored) : tarifasDefault
+    const raw = localStorage.getItem('tarifas_canina')
+    stored = raw ? JSON.parse(raw) : null
   } catch (err) {
     log.warn('Tarifas guardadas ilegibles; se usan las de por defecto', { error: err })
     return tarifasDefault
   }
+  if (!stored) return tarifasDefault
+
+  // Tarifas guardadas con una versión anterior: se actualiza la tabla de estancia
+  // a los precios vigentes y se mantienen los servicios tal como estaban guardados.
+  if ((stored.version ?? 1) < TARIFAS_VERSION) {
+    const migradas = {
+      ...stored,
+      version: TARIFAS_VERSION,
+      estancia: JSON.parse(JSON.stringify(tarifasDefault.estancia)),
+    }
+    try {
+      saveTarifas(migradas)
+    } catch (err) {
+      log.warn('No se pudieron guardar las tarifas actualizadas en este dispositivo', { error: err })
+    }
+    log.info(`Tarifas de estancia actualizadas a la versión ${TARIFAS_VERSION}`)
+    return migradas
+  }
+  return stored
 }
 
 export function saveTarifas(tarifas) {
