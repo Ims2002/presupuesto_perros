@@ -76,6 +76,10 @@ export default function App() {
   // guardandoRef bloquea envíos simultáneos de forma síncrona (un doble toque
   // llega antes de que React vuelva a pintar con guardando=true).
   const guardandoRef = useRef(false)
+  // Ids de las líneas del último guardado de cada presupuesto (id del registro → [ids]).
+  // Al volver a guardar se compara: si faltan líneas, el registro lo indica
+  // (y el de "form:lineas" dirá si se borraron con confirmación o se perdieron).
+  const lineasGuardadasRef = useRef(new Map())
   const [guardando, setGuardando] = useState(false)
   const [errorGuardado, setErrorGuardado] = useState(null)   // { mensaje, datos } si falló el guardado
   const [avisoPreview, setAvisoPreview] = useState(null)     // { tipo: 'ok' | 'error', texto }
@@ -169,17 +173,33 @@ export default function App() {
 
     const campos = camposDesdeFormulario(datos)
     const modo = editId ? 'editar' : 'crear'
+    const idsLineas = (datos.lineas || []).map(l => l?.id).filter(Boolean)
     log.info(`Guardar presupuesto (${modo})`, {
       editId,
       borradorId: editId ? undefined : borradorId,
       ...resumenParaLog({ ...campos, numero: datos.numero }),
+      idsLineas: idsLineas.map(id => String(id).slice(0, 8)),
     })
+    const anteriores = editId ? lineasGuardadasRef.current.get(editId) : null
+    if (anteriores) {
+      const faltan = anteriores.filter(id => !idsLineas.includes(id))
+      if (faltan.length) {
+        log.info('Se guarda con menos líneas que en el guardado anterior', {
+          editId,
+          numero: datos.numero,
+          antes: anteriores.length,
+          ahora: idsLineas.length,
+          faltan: faltan.map(id => String(id).slice(0, 8)),
+        })
+      }
+    }
 
     try {
       let guardado
       if (editId) {
         // UPDATE: conserva el número original y el dispositivo que lo creó
         await actualizarPresupuesto(editId, campos)
+        lineasGuardadasRef.current.set(editId, idsLineas)
         guardado = datos
         setAvisoPreview({ tipo: 'ok', texto: `Cambios guardados en el presupuesto #${datos.numero}` })
       } else {
@@ -195,8 +215,10 @@ export default function App() {
         }
         guardado = { ...datos, numero: row.numero }
         registrarNumero(row.numero)
+        lineasGuardadasRef.current.set(row.id, idsLineas)
         setEditId(row.id)
-        setEditData(guardado)
+        // "origen" solo viaja al formulario (para el registro), no se guarda en la BD
+        setEditData({ ...guardado, origen: 'guardado del presupuesto nuevo' })
         setAvisoPreview({ tipo: 'ok', texto: `Guardado en el historial como #${row.numero}` })
         log.info('Formulario en modo edición del presupuesto recién creado', { id: row.id, numero: row.numero })
       }
@@ -238,7 +260,10 @@ export default function App() {
       lineas: p.lineas || [],
       notas: p.notas || '',
       numero: p.numero,
+      origen: 'historial (Editar)',
     })
+    const ids = (p.lineas || []).map(l => l?.id).filter(Boolean)
+    if (ids.length) lineasGuardadasRef.current.set(p.id, ids)
     setEditId(p.id)
     setErrorGuardado(null)
     setVista('form')

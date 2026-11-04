@@ -1,7 +1,49 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { createLogger } from '../lib/logger'
+import { nuevoIdBorrador } from '../lib/presupuestosRepo'
 
 const log = createLogger('form')
+// Logger específico de las líneas del resumen: en el visor se puede filtrar
+// por "form:lineas" para ver solo altas, cambios, borrados y pérdidas de líneas.
+const logLineas = log.child('lineas')
+
+/**
+ * Asegura que cada línea tiene un id estable. Las líneas guardadas antes de
+ * este cambio no lo tienen: se les asigna uno al cargarlas.
+ * El id sirve para identificar cada línea en el registro de actividad y como
+ * "key" de React (antes era el índice, y al borrar una línea la siguiente
+ * heredaba su posición, su foco y sus botones).
+ */
+function conIds(lineas) {
+  return (lineas || []).map(l => (l?.id ? l : { ...l, id: nuevoIdBorrador() }))
+}
+
+/** Id corto para el registro (los 8 primeros caracteres bastan para distinguirlas). */
+const idCorto = id => String(id ?? '').slice(0, 8)
+
+/** Datos de una línea aptos para el registro (sin el texto: solo su longitud). */
+function lineaParaLog(l, indice) {
+  return {
+    id: idCorto(l?.id),
+    indice,
+    cantidad: l?.cantidad,
+    precioUnit: l?.precioUnit,
+    largoDescripcion: (l?.descripcion || '').length,
+  }
+}
+
+/**
+ * Indica cómo se ha activado un botón: 'ratón', 'táctil', 'lápiz' o 'teclado'
+ * (Intro / espacio sobre el botón enfocado). Sirve para saber, por ejemplo, si
+ * un borrado se pidió con el teclado sin querer al tabular entre campos.
+ */
+function origenEvento(e) {
+  const pt = e?.nativeEvent?.pointerType
+  if (pt === 'mouse') return 'ratón'
+  if (pt === 'touch') return 'táctil'
+  if (pt === 'pen') return 'lápiz'
+  return e?.detail === 0 ? 'teclado' : 'ratón'
+}
 
 /**
  * Catálogo de tipos de estancia disponibles.
@@ -79,6 +121,27 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, init
   const [notas, setNotas] = useState('')
   const [lineas, setLineas] = useState([]) // array de líneas añadidas al presupuesto
 
+  // --- Trazabilidad de las líneas (registro de actividad) ---
+  // lineasRef: siempre el último valor de "lineas" (para leerlo dentro de efectos y handlers).
+  // motivosRef: por qué se va a cambiar la lista en el próximo render
+  //   ('añadir' | 'modificar' | 'eliminar' | 'cargar' | 'vaciar'). Lo consume el
+  //   vigilante de más abajo: si desaparece una línea sin un motivo que lo
+  //   justifique, se deja un aviso en el registro con el detalle.
+  const lineasRef = useRef(lineas)
+  lineasRef.current = lineas
+  const motivosRef = useRef([])
+  const prevLineasRef = useRef(lineas)
+  const edicionRef = useRef(null) // { id, campo, valor } del campo del resumen con el foco
+
+  /** Único punto por el que se cambia la lista de líneas: anota el motivo y aplica el cambio. */
+  function cambiarLineas(motivo, updater) {
+    motivosRef.current.push(motivo)
+    setLineas(updater)
+  }
+
+  // --- Confirmación de borrado de líneas ---
+  const [lineaABorrar, setLineaABorrar] = useState(null) // { id, indice, origen } o null
+
   // --- Estado del bloque "Estancia" ---
   const [numMascotas, setNumMascotas] = useState(0)       // índice en tarifas.estancia (0=1 mascota, 1=2, 2=3, 3=4)
   const [tipoEstancia, setTipoEstancia] = useState('')
@@ -103,22 +166,72 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, init
    */
   useEffect(() => {
     log.debug(initialData ? 'Formulario cargado con datos' : 'Formulario en blanco', initialData ? { numero: initialData.numero, lineas: initialData.lineas?.length ?? 0 } : undefined)
+    const actuales = lineasRef.current
     if (initialData) {
+      const nuevas = conIds(initialData.lineas)
+      // Si lo que hay en pantalla no coincide con lo que se va a cargar, se
+      // pierden cambios del usuario (p. ej. líneas añadidas o editadas mientras
+      // el botón ponía "Guardando..."). Se deja constancia de qué se pierde.
+      const porId = new Map(nuevas.map(l => [l.id, JSON.stringify(l)]))
+      const perdidas = actuales.filter(l => !porId.has(l.id))
+      const modificadas = actuales.filter(l => porId.has(l.id) && porId.get(l.id) !== JSON.stringify(l))
+      if (actuales.length && (perdidas.length || modificadas.length)) {
+        logLineas.warn('Al cargar datos en el formulario se descartan cambios que había en pantalla', {
+          origen: initialData.origen || 'desconocido',
+          numero: initialData.numero,
+          lineasEnPantalla: actuales.length,
+          lineasCargadas: nuevas.length,
+          lineasDescartadas: perdidas.map(l => lineaParaLog(l, actuales.indexOf(l))),
+          lineasConCambiosDescartados: modificadas.map(l => lineaParaLog(l, actuales.indexOf(l))),
+        })
+      }
       setCliente(initialData.cliente || { nombre: '' })
       setMascota(initialData.mascota || '')
       setFechaInicio(initialData.fechaInicio || '')
       setFechaFin(initialData.fechaFin || '')
       setNotas(initialData.notas || '')
-      setLineas(initialData.lineas || [])
+      cambiarLineas({ accion: 'cargar', origen: initialData.origen || 'desconocido', numero: initialData.numero }, nuevas)
     } else {
       setCliente({ nombre: '' })
       setMascota('')
       setFechaInicio('')
       setFechaFin('')
       setNotas('')
-      setLineas([])
+      cambiarLineas({ accion: 'vaciar' }, [])
     }
   }, [initialData])
+
+  /**
+   * Vigilante de la lista de líneas: compara cada versión con la anterior.
+   * Si desaparece alguna línea, lo registra junto con el motivo del cambio.
+   *   - Motivo esperado (borrado confirmado, carga, vaciado) → info.
+   *   - Cualquier otro caso → warn "Han desaparecido líneas del resumen sin que
+   *     el usuario las borrase", con el motivo que se estaba aplicando y las
+   *     líneas afectadas. Es la entrada que hay que buscar si vuelve a ocurrir.
+   */
+  useEffect(() => {
+    const prev = prevLineasRef.current
+    prevLineasRef.current = lineas
+    const motivos = motivosRef.current
+    motivosRef.current = []
+    if (prev === lineas) return
+
+    const idsAhora = new Set(lineas.map(l => l.id))
+    const desaparecidas = prev.filter(l => !idsAhora.has(l.id))
+    if (desaparecidas.length === 0) return
+
+    const acciones = motivos.map(m => m.accion)
+    const datos = {
+      motivo: acciones.length ? acciones.join('+') : 'desconocido',
+      detalleMotivo: motivos,
+      antes: prev.length,
+      despues: lineas.length,
+      desaparecidas: desaparecidas.map(l => lineaParaLog(l, prev.indexOf(l))),
+    }
+    const esperado = acciones.some(a => a === 'eliminar' || a === 'cargar' || a === 'vaciar')
+    if (esperado) logLineas.info('Líneas quitadas del resumen', datos)
+    else logLineas.warn('Han desaparecido líneas del resumen sin que el usuario las borrase', datos)
+  }, [lineas])
 
   // Desglose de días calculado en tiempo real según las fechas introducidas
   const split = splitDias(fechaInicio, fechaFin)
@@ -144,14 +257,14 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, init
         ? tipoEstancia
         : FIN_SEMANA_KEY[tipoEstancia]
       if (split.entresemana > 0) {
-        addLinea(`${row.label} - ${tipo.label}`, subfechaEstancia, split.entresemana, row[tipoEstancia])
+        addLinea(`${row.label} - ${tipo.label}`, subfechaEstancia, split.entresemana, row[tipoEstancia], 'estancia')
       }
       if (split.finSemana > 0) {
         const fsLabel = TIPOS_ESTANCIA.find(t => t.key === fsKey)?.label || tipo.label
-        addLinea(`${row.label} - ${fsLabel} (fin de semana)`, subfechaEstancia, split.finSemana, row[fsKey])
+        addLinea(`${row.label} - ${fsLabel} (fin de semana)`, subfechaEstancia, split.finSemana, row[fsKey], 'estancia')
       }
     } else {
-      addLinea(`${row.label} - ${tipo.label}`, subfechaEstancia, 1, row[tipoEstancia])
+      addLinea(`${row.label} - ${tipo.label}`, subfechaEstancia, 1, row[tipoEstancia], 'estancia')
     }
     setSubfechaEstancia('')
   }
@@ -166,7 +279,7 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, init
     const srv = tarifas.servicios.find(s => s.id === servicioSel)
     const precio = srv.tipo === 'consultar' ? null : srv[diasSemana]
     const esFs = diasSemana === 'finSemana'
-    addLinea(`${srv.label} (${esFs ? 'fin de semana/festivo' : 'entre semana'})`, subfechaServicio, cantServicio, precio)
+    addLinea(`${srv.label} (${esFs ? 'fin de semana/festivo' : 'entre semana'})`, subfechaServicio, cantServicio, precio, 'catalogo')
     setCantServicio(1)
     setSubfechaServicio('')
   }
@@ -177,7 +290,7 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, init
    */
   function addManual() {
     if (!manDesc || manPrecio === '') return
-    addLinea(manDesc, manSubfecha, Number(manCant), Number(manPrecio))
+    addLinea(manDesc, manSubfecha, Number(manCant), Number(manPrecio), 'manual')
     setManDesc('')
     setManSubfecha('')
     setManPrecio('')
@@ -193,44 +306,98 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, init
    * @param {string} subfecha    - Texto aclaratorio opcional (días concretos, etc.)
    * @param {number} cantidad
    * @param {number|null} precioUnit
+   * @param {string} origen      - Bloque desde el que se añade: 'estancia' | 'catalogo' | 'manual'
    */
-  function addLinea(descripcion, subfecha, cantidad, precioUnit) {
-    log.debug('Línea añadida', { descripcion, cantidad: Number(cantidad), precioUnit })
-    setLineas(prev => [...prev, {
+  function addLinea(descripcion, subfecha, cantidad, precioUnit, origen) {
+    const linea = {
+      id: nuevoIdBorrador(),
       descripcion,
       subfecha: subfecha || '',
       cantidad: Number(cantidad),
       precioUnit,
       subtotal: precioUnit !== null ? Number(cantidad) * precioUnit : null,
-    }])
-  }
-
-  /** Elimina la línea en la posición i del resumen. */
-  function removeLinea(i) {
-    log.debug('Línea eliminada', { indice: i })
-    setLineas(prev => prev.filter((_, idx) => idx !== i))
+    }
+    logLineas.info('Línea añadida', { origen, ...lineaParaLog(linea, lineasRef.current.length), lineasTotales: lineasRef.current.length + 1 })
+    cambiarLineas({ accion: 'añadir', id: idCorto(linea.id), origen }, prev => [...prev, linea])
   }
 
   /**
-   * Actualiza un campo de una línea existente en el resumen.
+   * Paso 1 del borrado: el botón "x" NO borra, solo abre la ventana de
+   * confirmación. Se registra cómo se pulsó (ratón, táctil o teclado).
+   */
+  function pedirBorrado(l, i, e) {
+    const origen = origenEvento(e)
+    logLineas.info('Pedir confirmación para eliminar línea', { ...lineaParaLog(l, i), origen, lineasTotales: lineas.length })
+    setLineaABorrar({ id: l.id, indice: i, origen })
+  }
+
+  /** Cierra la ventana de confirmación sin borrar nada. */
+  function cancelarBorrado(como) {
+    if (!lineaABorrar) return
+    logLineas.info('Eliminación de línea cancelada', { id: idCorto(lineaABorrar.id), como })
+    setLineaABorrar(null)
+  }
+
+  /** Paso 2 del borrado: el usuario ha confirmado en la ventana. Borra por id, no por posición. */
+  function confirmarBorrado() {
+    if (!lineaABorrar) return
+    const { id, origen } = lineaABorrar
+    const indice = lineas.findIndex(l => l.id === id)
+    if (indice === -1) {
+      logLineas.warn('Se confirmó el borrado de una línea que ya no estaba en el resumen', { id: idCorto(id) })
+    } else {
+      logLineas.info('Línea eliminada (confirmado por el usuario)', { ...lineaParaLog(lineas[indice], indice), origen, quedan: lineas.length - 1 })
+      cambiarLineas({ accion: 'eliminar', id: idCorto(id) }, prev => prev.filter(l => l.id !== id))
+    }
+    setLineaABorrar(null)
+  }
+
+  /**
+   * Actualiza un campo de una línea existente en el resumen (por id).
    * Si se modifica cantidad o precioUnit, recalcula el subtotal.
+   * No pide confirmación ni registra cada pulsación: el cambio se registra
+   * una sola vez al salir del campo (ver finEdicion).
    *
-   * @param {number} i     - Índice de la línea
+   * @param {string} id    - Id de la línea
    * @param {string} field - Campo a modificar
    * @param {string} val   - Nuevo valor (siempre string desde el input)
    */
-  function updateLinea(i, field, val) {
-    setLineas(prev => {
-      const copy = [...prev]
-      if (field === 'descripcion' || field === 'subfecha') {
-        copy[i] = { ...copy[i], [field]: val }
-      } else {
-        copy[i] = { ...copy[i], [field]: Number(val) }
-        const l = copy[i]
-        copy[i].subtotal = l.precioUnit !== null ? l.cantidad * l.precioUnit : null
-      }
-      return copy
-    })
+  function updateLinea(id, field, val) {
+    cambiarLineas({ accion: 'modificar', id: idCorto(id), campo: field }, prev => prev.map(l => {
+      if (l.id !== id) return l
+      if (field === 'descripcion' || field === 'subfecha') return { ...l, [field]: val }
+      const nueva = { ...l, [field]: Number(val) }
+      nueva.subtotal = nueva.precioUnit !== null ? nueva.cantidad * nueva.precioUnit : null
+      return nueva
+    }))
+  }
+
+  /** Al entrar en un campo del resumen se guarda su valor para comparar al salir. */
+  function inicioEdicion(l, campo) {
+    edicionRef.current = { id: l.id, campo, valor: l[campo] }
+  }
+
+  /**
+   * Al salir de un campo del resumen se registra el cambio (una entrada por
+   * edición, no por tecla). Del texto solo se anota la longitud.
+   * Si la línea ya no existe al salir del campo, es una pérdida: se avisa.
+   */
+  function finEdicion(l, campo) {
+    const ed = edicionRef.current
+    edicionRef.current = null
+    if (!ed || ed.id !== l.id || ed.campo !== campo) return
+    const actuales = lineasRef.current
+    const indice = actuales.findIndex(x => x.id === l.id)
+    if (indice === -1) {
+      logLineas.warn('La línea que se estaba editando ya no está en el resumen', { id: idCorto(l.id), campo })
+      return
+    }
+    const nuevo = actuales[indice][campo]
+    if (nuevo === ed.valor) return
+    const cambio = campo === 'cantidad'
+      ? { de: ed.valor, a: nuevo }
+      : { largoAntes: String(ed.valor ?? '').length, largoDespues: String(nuevo ?? '').length }
+    logLineas.info('Línea modificada', { id: idCorto(l.id), indice, campo, ...cambio, lineasTotales: actuales.length })
   }
 
   /**
@@ -277,7 +444,11 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, init
   // Total acumulado de todas las líneas con precio conocido
   const total = lineas.reduce((s, l) => s + (l.subtotal ?? 0), 0)
 
+  // Línea pendiente de confirmar su borrado (para mostrarla en la ventana)
+  const lineaPendiente = lineaABorrar ? lineas.find(l => l.id === lineaABorrar.id) : null
+
   return (
+    <>
     <form onSubmit={handleSubmit} onKeyDown={bloquearIntro} className="space-y-5">
 
       {/* Banner de modo edición — solo visible cuando isEditing es true */}
@@ -415,19 +586,21 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, init
           <div style={sec}>Resumen</div>
           <div className="space-y-2">
             {lineas.map((l, i) => (
-              <div key={i} className="flex items-start gap-3 p-3 bg-gray-50 rounded-xl text-sm">
+              <div key={l.id ?? i} className="flex items-start gap-3 p-3 bg-gray-50 rounded-xl text-sm">
                 <div className="flex-1 min-w-0">
                   {/* Descripción y aclaración son editables inline para correcciones rápidas */}
-                  <input className="w-full bg-transparent border-b border-gray-200 focus:outline-none focus:border-amber-400 text-gray-700 font-medium text-xs" value={l.descripcion} onChange={e => updateLinea(i, 'descripcion', e.target.value)} />
-                  <input className="w-full bg-transparent text-gray-400 text-xs mt-1 border-b border-gray-100 focus:outline-none" value={l.subfecha} onChange={e => updateLinea(i, 'subfecha', e.target.value)} placeholder="Aclaracion..." />
+                  <input className="w-full bg-transparent border-b border-gray-200 focus:outline-none focus:border-amber-400 text-gray-700 font-medium text-xs" value={l.descripcion} onChange={e => updateLinea(l.id, 'descripcion', e.target.value)} onFocus={() => inicioEdicion(l, 'descripcion')} onBlur={() => finEdicion(l, 'descripcion')} />
+                  <input className="w-full bg-transparent text-gray-400 text-xs mt-1 border-b border-gray-100 focus:outline-none" value={l.subfecha ?? ''} onChange={e => updateLinea(l.id, 'subfecha', e.target.value)} onFocus={() => inicioEdicion(l, 'subfecha')} onBlur={() => finEdicion(l, 'subfecha')} placeholder="Aclaracion..." />
                 </div>
                 <div className="flex items-center gap-1 shrink-0 mt-1">
                   {/* La cantidad también es editable; al cambiar recalcula el subtotal */}
-                  <input type="number" min={1} className="w-12 border border-gray-200 rounded px-2 py-1 text-center text-xs focus:outline-none" value={l.cantidad} onChange={e => updateLinea(i, 'cantidad', e.target.value)} />
+                  <input type="number" min={1} className="w-12 border border-gray-200 rounded px-2 py-1 text-center text-xs focus:outline-none" value={l.cantidad} onChange={e => updateLinea(l.id, 'cantidad', e.target.value)} onFocus={() => inicioEdicion(l, 'cantidad')} onBlur={() => finEdicion(l, 'cantidad')} />
                   <span className="text-gray-400 text-xs">x {l.precioUnit ?? '?'}</span>
                   <span className="font-bold text-gray-700 text-xs w-16 text-right">{l.subtotal !== null ? `${l.subtotal.toFixed(2)}EUR` : '-'}</span>
                 </div>
-                <button type="button" onClick={() => removeLinea(i)} className="text-gray-300 hover:text-red-400 text-base leading-none mt-1 shrink-0">x</button>
+                {/* Abre la confirmación; no borra directamente. Fuera del orden de tabulación
+                    para que Tab pase de la cantidad a la línea siguiente sin pararse aquí. */}
+                <button type="button" tabIndex={-1} aria-label={`Eliminar línea ${i + 1}`} title="Eliminar línea" onClick={e => pedirBorrado(l, i, e)} className="text-gray-300 hover:text-red-400 text-base leading-none mt-1 shrink-0">x</button>
               </div>
             ))}
           </div>
@@ -454,5 +627,61 @@ export default function PresupuestoForm({ tarifas, onGenerar, ultimoNumero, init
         {guardando ? 'Guardando...' : isEditing ? 'Guardar cambios' : 'Ver presupuesto'}
       </button>
     </form>
+
+    {/* Ventana de confirmación antes de eliminar una línea del resumen.
+        El foco empieza en "Cancelar": un Intro o espacio accidental no borra nada. */}
+    {lineaABorrar && (
+      <div
+        className="no-print"
+        onClick={() => cancelarBorrado('clic fuera')}
+        onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); cancelarBorrado('tecla Escape') } }}
+        style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+          zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16
+        }}
+      >
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="borrar-linea-titulo"
+          onClick={e => e.stopPropagation()}
+          style={{ background: 'white', borderRadius: 16, padding: 24, maxWidth: 380, width: '100%' }}
+        >
+          <div id="borrar-linea-titulo" style={{ fontWeight: 700, fontSize: 16, color: '#1f2937', marginBottom: 8 }}>
+            ¿Eliminar esta línea?
+          </div>
+          <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 14 }}>
+            Se quitará del resumen del presupuesto.
+          </div>
+          {lineaPendiente && (
+            <div style={{ fontSize: 13, background: '#f9fafb', border: '1px solid #f3f4f6', borderRadius: 10, padding: '10px 12px', marginBottom: 20 }}>
+              <div style={{ fontWeight: 600, color: '#374151', wordBreak: 'break-word' }}>{lineaPendiente.descripcion || '(sin descripción)'}</div>
+              {lineaPendiente.subfecha && <div style={{ color: '#9ca3af', fontSize: 12, marginTop: 2 }}>{lineaPendiente.subfecha}</div>}
+              <div style={{ color: '#6b7280', fontSize: 12, marginTop: 4 }}>
+                {lineaPendiente.cantidad} x {lineaPendiente.precioUnit ?? '?'} = {lineaPendiente.subtotal !== null && lineaPendiente.subtotal !== undefined ? `${Number(lineaPendiente.subtotal).toFixed(2)} EUR` : 'Consultar'}
+              </div>
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              autoFocus
+              onClick={() => cancelarBorrado('botón Cancelar')}
+              style={{ flex: 1, padding: '10px 0', background: 'white', color: '#374151', border: '1px solid #e5e7eb', borderRadius: 10, cursor: 'pointer', fontSize: 14, fontWeight: 500 }}
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={confirmarBorrado}
+              style={{ flex: 1, padding: '10px 0', background: '#dc2626', color: 'white', border: 'none', borderRadius: 10, cursor: 'pointer', fontSize: 14, fontWeight: 600 }}
+            >
+              Eliminar
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   )
 }
